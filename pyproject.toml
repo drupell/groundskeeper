@@ -1,0 +1,40 @@
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+extend-exclude = '''
+/(
+    \.venv-deploy
+  | \.venv-dev
+  | \.groundskeeper-build
+  | frontend/node_modules
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".venv-deploy",
+    ".venv-dev",
+    ".groundskeeper-build",
+    "frontend/node_modules",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length is enforced by Black
+    "B008",  # function calls in argument defaults — false-positives on FastAPI-style code
+]
+
+[tool.ruff.lint.per-file-ignores]
+# deploy.py intentionally places third-party imports after a venv-bootstrap
+# block, so it must opt out of "imports at top of file" and import sorting.
+"deploy.py" = ["E402", "I001"]
+"teardown.py" = ["E402", "I001"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+# Put backend/ on sys.path so tests import the Lambda code the same way the
+# bundled zips do (`from shared.foo import bar`).
+pythonpath = ["backend"]
