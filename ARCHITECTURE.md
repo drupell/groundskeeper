@@ -1,9 +1,12 @@
 # Architecture
 
-Groundskeeper is a single-tenant AWS app that automates realistic-looking
-GitHub commits on a repo you own. The backend is three Python Lambdas plus
-DynamoDB, Secrets Manager, EventBridge Scheduler, and Bedrock Nova Lite.
-The frontend is a Vite + React + Tailwind dashboard hosted on Amplify.
+Groundskeeper is a single-tenant framework for observing agent commit
+decisions on a repo you own. You provide the repo, a style prompt, and a
+per-day commit-count curve; an LLM agent picks a file, chooses between a
+creative or destructive edit, commits it, and logs the decision. The backend
+is three Python Lambdas plus DynamoDB, Secrets Manager, EventBridge
+Scheduler, and Bedrock Nova Lite. The frontend is a Vite + React + Tailwind
+dashboard hosted on Amplify.
 
 ## Data flow
 
@@ -53,6 +56,7 @@ The frontend is a Vite + React + Tailwind dashboard hosted on Amplify.
 ## Components
 
 ### Orchestrator Lambda
+
 `backend/lambdas/orchestrator/handler.py`. Triggered by the daily
 EventBridge cron. Reads `CONFIG` (schedule, distribution, vacation) and
 `GITHUB` (repo + branch). Picks a commit count from the distribution,
@@ -62,6 +66,7 @@ and writes a `RUN#<YYYY-MM-DD>` record summarizing the plan. Skips
 gracefully on vacation days.
 
 ### Executor Lambda
+
 `backend/lambdas/executor/handler.py`. Invoked by a Scheduler rule
 (payload carries run context). Resolves the current repo via
 `shared/github.py:resolve_current`, picks a target file with
@@ -72,6 +77,7 @@ commit lights up the contribution graph. Each run appends a
 `LOG#<iso-ts>#<rand>` row.
 
 ### API Lambda
+
 `backend/lambdas/api/handler.py`. Dispatch table at `_ROUTES` maps
 `(method, path)` to handlers. Backs the dashboard: GET/PUT/PATCH
 `/config`, GitHub PAT + repo CRUD, `/logs`, `/runs`, `/status`,
@@ -79,6 +85,7 @@ commit lights up the contribution graph. Each run appends a
 `/test/run`, and `/run/now` (synchronous orchestrator invoke).
 
 ### DynamoDB single-table
+
 `shared/ddb.py`. One table, partition key `pk="USER#default"`. Sort keys:
 
 - `CONFIG` — schedule, distribution, commit style, vacation.
@@ -87,24 +94,29 @@ commit lights up the contribution graph. Each run appends a
 - `LOG#<iso-ts>#<rand>` — per-commit executor log entry.
 
 ### Secrets Manager
+
 One secret, `groundskeeper/github-pat`, holding the personal access
 token. Accessed via `shared/secrets.py`. Nothing else lives here.
 
 ### EventBridge Scheduler
+
 One scheduler group. The orchestrator creates one-time rules with
 `ActionAfterCompletion=DELETE` so cleanup is automatic — the group never
 accumulates stale entries. Wrapped by `shared/scheduler.py`.
 
 ### Bedrock Nova Lite
+
 Model id `amazon.nova-lite-v1:0`. Prompt templates live in
 `shared/bedrock.py` (file-edit prompt + commit-message prompt). The
 executor is the only caller; IAM scopes the model ARN to this id.
 
 ### Amplify
+
 Static hosting for the built `frontend/dist` bundle plus basic-auth on
 the app branch. Provisioning + password rotation in `shared/amplify.py`.
 
 ### frontend/
+
 Vite + React 18 + TypeScript + Tailwind v4. React Query owns server
 state (`src/hooks/useApi.ts` wraps the typed client in `src/lib/api.ts`).
 Theme tokens are CSS variables on `<html>`; dark mode is the `.dark`
@@ -200,8 +212,10 @@ fall back to `owner/name` lookup once and get promoted on first read.
 
 ## Design decisions worth knowing
 
-- Single-tenant by design — one DynamoDB `pk="USER#default"`. No
-  multi-tenant indirection anywhere.
+- v0.1.0 is the single-repo, single-agent foundation — one DynamoDB
+  `pk="USER#default"`, one Bedrock model, one connected repo. Later
+  versions can fan out to multi-repo and multi-agent comparisons; this
+  release keeps the observation loop intentionally narrow.
 - `urllib` over `requests` in `shared/github.py` so Lambdas ship as a
   flat zip with zero third-party deps and no Lambda layer.
 - GitHub commit author is the user's `<id>+<login>@users.noreply.github.com`
@@ -212,10 +226,22 @@ fall back to `owner/name` lookup once and get promoted on first read.
   `frontend/src/index.css`; light/dark mode flips the variable values,
   components never branch on theme.
 
-## Future ideas
+## Roadmap
 
-- Multi-repo: either a list of repos under the single user, or actual
-  multi-tenancy (would touch every DDB key).
+- Pluggable model providers — abstract the Bedrock call in `shared/bedrock.py`
+  behind an agent interface so Anthropic, OpenAI, local models, etc. can
+  drop in. Opens the door to comparing how different models behave against
+  the same repo + prompt.
+- Richer prompt scaffolds — beyond the current creative/destructive
+  two-mode prompt, add research-then-edit and plan-then-execute flows so
+  the observed decisions get more interesting than a single shot.
+- Decision telemetry on the dashboard — the per-commit log already captures
+  file, edit mode, prompt, and model output. Next is surfacing the
+  patterns: which files the agent reaches for, drift in tone over time,
+  edit-mode mix.
+- Multi-repo deployments — either a list of repos under the single user,
+  or actual multi-tenancy (would touch every DDB key). Enables
+  cross-corpus comparison from one deployment.
 - GitHub webhook on push so a real human commit auto-marks the day as
   "already covered" instead of relying on the vacation toggle.
 - Calendar integration: skip national holidays / detected PTO.

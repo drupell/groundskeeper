@@ -33,7 +33,7 @@ export function DashboardPage() {
       <header className="mb-8">
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">Dashboard</h1>
         <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-          Here's today's plan and what's been happening.
+          Today's agent run and recent decisions.
         </p>
       </header>
 
@@ -192,8 +192,8 @@ function VacationCard({ active, until }: { active: boolean; until: string | null
           <div>
             <p className="text-base font-medium text-[var(--color-fg)]">Vacation mode</p>
             <p className="mt-0.5 max-w-md text-sm text-[var(--color-fg-muted)]">
-              Pause all automated commits. While this is on, the nightly planner stays quiet and
-              nothing gets scheduled.
+              Pause the agent. While this is on, the nightly planner stays quiet and no runs get
+              scheduled.
             </p>
           </div>
         </div>
@@ -357,7 +357,7 @@ function TodayPlanCard() {
             onClick={() => void runScheduler()}
             disabled={running}
             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-2.5 py-1 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
-            title="Run the planner now — it'll set up today's schedules and start committing."
+            title="Run the planner now — it'll set up today's agent runs and kick off the first one."
           >
             {running ? <Loader size={12} className="animate-spin" /> : <Play size={12} />}
             Run scheduler now
@@ -509,8 +509,8 @@ function TestToolsCard() {
     <Card>
       <CardHeader title="Test & preview" icon={<Zap size={18} />} />
       <p className="mb-4 text-sm text-[var(--color-fg-muted)]">
-        No need to wait for tonight. Fire a real commit now, or peek at what tonight's run would
-        schedule — preview changes nothing.
+        No need to wait for tonight. Trigger an agent run now, or peek at what tonight's planner
+        would schedule — preview changes nothing.
       </p>
 
       <div className="flex flex-wrap gap-2">

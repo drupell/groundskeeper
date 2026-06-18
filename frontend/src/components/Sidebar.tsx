@@ -31,7 +31,7 @@ export function Sidebar() {
           Groundskeeper
         </h1>
         <p className="mt-0.5 text-xs text-[var(--color-fg-muted)]">
-          Your personal commit autopilot
+          Watch what the agent picks today
         </p>
       </div>
       <nav className="flex-1 space-y-1 p-3">

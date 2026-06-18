@@ -2,7 +2,7 @@
 
 ## Project scope
 
-Groundskeeper is a single-tenant, personal-use tool. PRs that fit the personal-use scope are welcome; refactors toward multi-tenancy, team features, or hosted-service ambitions aren't a fit and won't be merged.
+Groundskeeper is a single-tenant framework for handing an LLM a repo and a rough direction, then observing the decisions it makes day by day. PRs that sharpen that observation loop — the executor, the orchestrator, the dashboard levers, the commit log — are welcome; refactors toward multi-tenancy, team features, or hosted-service ambitions aren't a fit and won't be merged. See [VISION.md](./VISION.md) for the bigger arc before opening a PR.
 
 ## Getting set up
 
