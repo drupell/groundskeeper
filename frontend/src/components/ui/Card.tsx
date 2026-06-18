@@ -11,7 +11,12 @@ import { cn } from '@/lib/utils'
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('rounded-xl border border-slate-800 bg-slate-950 p-6', className)}>
+    <div
+      className={cn(
+        'rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-6',
+        className,
+      )}
+    >
       {children}
     </div>
   )
@@ -28,8 +33,8 @@ export function CardHeader({
 }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="inline-flex items-center gap-2 text-base font-medium text-white">
-        {icon && <span className="text-slate-500">{icon}</span>}
+      <h2 className="inline-flex items-center gap-2 text-base font-medium text-[var(--color-fg)]">
+        {icon && <span className="text-[var(--color-fg-muted)]">{icon}</span>}
         {title}
       </h2>
       {children}
@@ -38,9 +43,9 @@ export function CardHeader({
 }
 
 export function CardSubtitle({ children }: { children: ReactNode }) {
-  return <p className="-mt-2 mb-4 text-sm text-slate-400">{children}</p>
+  return <p className="-mt-2 mb-4 text-sm text-[var(--color-fg-muted)]">{children}</p>
 }
 
 export function CardFooter({ children }: { children: ReactNode }) {
-  return <p className="mt-4 text-xs text-slate-500">{children}</p>
+  return <p className="mt-4 text-xs text-[var(--color-fg-muted)]">{children}</p>
 }

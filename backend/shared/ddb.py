@@ -101,6 +101,32 @@ def put_item(pk: str, sk: str, item: dict[str, Any]) -> None:
     table().put_item(Item=to_ddb(record))
 
 
+def put_item_conditional(
+    pk: str,
+    sk: str,
+    item: dict[str, Any],
+    expected_version: int | None,
+) -> None:
+    """Put ``item`` only if the stored item's ``version`` matches ``expected_version``.
+
+    ``expected_version=None`` means "the item must not exist yet" — used for the
+    first write. Raises ``botocore.exceptions.ClientError`` with code
+    ``ConditionalCheckFailedException`` when a concurrent writer beat us.
+    """
+    record = {**item, "pk": pk, "sk": sk}
+    if expected_version is None:
+        table().put_item(
+            Item=to_ddb(record),
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        return
+    table().put_item(
+        Item=to_ddb(record),
+        ConditionExpression="version = :ev",
+        ExpressionAttributeValues={":ev": to_ddb(expected_version)},
+    )
+
+
 def update_attrs(pk: str, sk: str, attrs: dict[str, Any]) -> dict[str, Any]:
     if not attrs:
         return get_item(pk, sk) or {}

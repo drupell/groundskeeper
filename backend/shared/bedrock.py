@@ -26,7 +26,14 @@ def generate_edit(
     max_tokens: int = 1024,
     temperature: float = 0.7,
 ) -> str:
-    """Invoke Nova Lite and return the (cleaned) text response."""
+    """Invoke Nova Lite and return the (cleaned) text response.
+
+    Raises ``UpstreamError(code="bedrock_error")`` if the API call itself is
+    rejected, and ``UpstreamError(code="bedrock_truncated")`` if the model hit
+    its ``max_tokens`` output budget — committing the partial response would
+    silently truncate the file in the user's repo, so the caller should retry
+    with a different (smaller) file instead.
+    """
     payload = {
         "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
         "system": [{"text": system_prompt}],
@@ -41,10 +48,15 @@ def generate_edit(
         )
     except ClientError as e:
         raise UpstreamError(
-            f"Bedrock invoke failed: {e.response['Error'].get('Message', e)}",
+            f"Bedrock didn't accept the request: {e.response['Error'].get('Message', e)}",
             code="bedrock_error",
         ) from e
     body = json.loads(resp["body"].read())
+    if body.get("stopReason") == "max_tokens":
+        raise UpstreamError(
+            "The model hit its output limit — file may be too large to safely round-trip.",
+            code="bedrock_truncated",
+        )
     return clean_output(_extract_text(body))
 
 

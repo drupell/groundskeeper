@@ -2,9 +2,37 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Groundskeeper</title>
+    <meta
+      name="description"
+      content="Groundskeeper tends your GitHub contribution graph, keeping it warm and green with thoughtful, scheduled commits."
+    />
+    <meta name="theme-color" content="#fbf7ef" />
+    <title>Groundskeeper - keeps your graph green</title>
+    <script>
+      // No-FOUC: resolve theme before paint and set the .dark class on <html>.
+      ;(function () {
+        try {
+          var stored = null
+          try {
+            stored = window.localStorage.getItem('gk-theme')
+          } catch (e) {
+            stored = null
+          }
+          var theme =
+            stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+          var dark =
+            theme === 'dark' ||
+            (theme === 'system' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {
+          /* ignore */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

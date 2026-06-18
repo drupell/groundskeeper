@@ -20,7 +20,7 @@ _client = boto3.client("secretsmanager")
 
 def _require_name() -> str:
     if not _PAT_SECRET_NAME:
-        raise RuntimeError("PAT_SECRET_NAME env var is not set.")
+        raise RuntimeError("PAT_SECRET_NAME env var isn't set.")
     return _PAT_SECRET_NAME
 
 

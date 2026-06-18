@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <title>Groundskeeper</title>
+  <!-- Rounded soil mound -->
+  <path d="M 3 27 Q 16 19 29 27 L 29 30 L 3 30 Z" fill="#78716c"/>
+  <!-- Stem with a playful S-curve -->
+  <path d="M 16 27 Q 13 22 17 16" stroke="#92400e" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <!-- Left leaf — chubby, darker green, tilted up-left -->
+  <ellipse cx="11" cy="13" rx="6" ry="4" fill="#10b981" transform="rotate(-30 11 13)"/>
+  <!-- Right leaf — slightly bigger, lighter green, tilted up-right -->
+  <ellipse cx="22" cy="11" rx="6.5" ry="4.2" fill="#34d399" transform="rotate(35 22 11)"/>
+</svg>

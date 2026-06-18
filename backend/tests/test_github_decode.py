@@ -30,7 +30,6 @@ def test_missing_fields_return_empty_string():
     assert decode_file({}) == ""
 
 
-def test_invalid_utf8_is_replaced_not_raised():
+def test_invalid_utf8_returns_none():
     payload = {"encoding": "base64", "content": base64.b64encode(b"\xff\xfe ok").decode()}
-    out = decode_file(payload)
-    assert out.endswith(" ok")
+    assert decode_file(payload) is None

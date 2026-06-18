@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 from shared import log
 
 PROJECT_TAG = "groundskeeper"
-ORCHESTRATOR_CRON = os.environ.get("ORCHESTRATOR_CRON", "cron(5 0 * * ? *)")
+ORCHESTRATOR_CRON = os.environ.get("ORCHESTRATOR_CRON", "cron(0 12 * * ? *)")
 
 
 def _get_region(region: str | None) -> str:

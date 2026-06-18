@@ -57,7 +57,7 @@ def create_executor_schedule(
     payload: dict[str, Any],
 ) -> None:
     if not _EXECUTOR_ARN or not _ROLE_ARN:
-        raise RuntimeError("EXECUTOR_ARN / SCHEDULER_ROLE_ARN env vars are not set.")
+        raise RuntimeError("EXECUTOR_ARN / SCHEDULER_ROLE_ARN env vars aren't set.")
     at_expr = fire_at_utc.strftime("at(%Y-%m-%dT%H:%M:%S)")
     try:
         _client.create_schedule(
@@ -71,8 +71,11 @@ def create_executor_schedule(
                 "Arn": _EXECUTOR_ARN,
                 "RoleArn": _ROLE_ARN,
                 "Input": json.dumps({**payload, "rule_name": name}),
+                # Executor handles its own retry budget for transient github errors;
+                # scheduler-level retries would compound and possibly fire after
+                # ActionAfterCompletion=DELETE has run.
                 "RetryPolicy": {
-                    "MaximumRetryAttempts": 2,
+                    "MaximumRetryAttempts": 0,
                     "MaximumEventAgeInSeconds": 600,
                 },
             },
@@ -83,7 +86,7 @@ def create_executor_schedule(
             # Already exists — orchestrator probably re-ran for the same date.
             return
         raise UpstreamError(
-            f"Scheduler create_schedule failed: {e.response['Error'].get('Message', e)}",
+            f"Couldn't create the scheduler entry: {e.response['Error'].get('Message', e)}",
             code="scheduler_error",
         ) from e
 

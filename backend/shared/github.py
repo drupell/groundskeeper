@@ -11,7 +11,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from shared.errors import BadRequest, Unauthorized, UpstreamError
+from shared import log
+from shared.errors import BadRequest, GroundskeeperError, Unauthorized, UpstreamError
 
 _API = "https://api.github.com"
 _UA = "groundskeeper-lambda/1.0"
@@ -49,9 +50,20 @@ def _request(
             raise Unauthorized(message, code="github_unauthorized") from e
         if e.code == 404:
             raise UpstreamError(message, code="github_not_found", status_code=404) from e
+        if e.code in (301, 308):
+            # urllib follows redirects silently on GET/HEAD but raises here on
+            # PUT/POST/DELETE. For our flow that almost always means the repo
+            # was renamed or transferred — the caller should re-resolve via
+            # the stable numeric repo id and retry.
+            raise UpstreamError(
+                "The repo seems to have been renamed or moved on GitHub. "
+                "Refresh the GitHub page in the dashboard to pick up the new name.",
+                code="repo_moved",
+                status_code=e.code,
+            ) from e
         raise UpstreamError(f"GitHub returned {e.code}: {message}", code="github_error") from e
     except urllib.error.URLError as e:
-        raise UpstreamError(f"Could not reach GitHub: {e.reason}", code="github_unreachable") from e
+        raise UpstreamError(f"Couldn't reach GitHub: {e.reason}", code="github_unreachable") from e
 
 
 def _wrap(payload: Any, headers: Any) -> dict[str, Any]:
@@ -86,7 +98,7 @@ def noreply_email(user_id: int | str | None, login: str | None) -> str | None:
 def verify_token(token: str) -> dict[str, Any]:
     """Validate a PAT and return user info, scope list, and whether scopes are sufficient."""
     if not isinstance(token, str) or not token.strip():
-        raise BadRequest("Token is required.")
+        raise BadRequest("Paste a GitHub token first.")
     _, user = _request("GET", "/user", token)
     headers = user.get("_headers", {})
     raw_scopes = headers.get("X-OAuth-Scopes") or headers.get("x-oauth-scopes") or ""
@@ -97,7 +109,10 @@ def verify_token(token: str) -> dict[str, Any]:
     uid = user.get("id")
 
     # A public profile email is rare; /user/emails needs the user:email scope
-    # which a repo-only classic PAT lacks, so this is best-effort.
+    # which a repo-only classic PAT lacks, so this is best-effort. Catch the
+    # broad project base — the common 403 (missing scope) lands as Unauthorized,
+    # not UpstreamError, and rejecting the whole token on it would block every
+    # repo-only PAT during onboarding.
     email = user.get("email")
     if not email:
         try:
@@ -108,7 +123,7 @@ def verify_token(token: str) -> dict[str, Any]:
                 None,
             )
             email = (primary or (emails[0] if emails else {}) or {}).get("email")
-        except UpstreamError:
+        except GroundskeeperError:
             email = None
 
     # The address commits MUST use to count on the graph: the real verified
@@ -135,7 +150,7 @@ def parse_repo_url(url: str) -> tuple[str, str]:
     """Extract ``(owner, repo)`` from a GitHub URL or ``owner/repo`` shorthand."""
     s = (url or "").strip()
     if not s:
-        raise BadRequest("Repo URL is required.")
+        raise BadRequest("Paste a repository URL first.")
 
     # owner/repo shorthand
     if "://" not in s and not s.startswith("git@"):
@@ -151,22 +166,39 @@ def parse_repo_url(url: str) -> tuple[str, str]:
         parts = bare.split("/")
         if len(parts) == 2 and all(parts):
             return parts[0], parts[1]
-        raise BadRequest("Could not parse owner/repo from URL.")
+        raise BadRequest("Couldn't read an owner/repo out of that URL.")
 
     parsed = urllib.parse.urlparse(s)
     host = parsed.netloc or "github.com"
     if "github.com" not in host:
-        raise BadRequest("Only github.com URLs are supported.")
+        raise BadRequest("Only github.com URLs work here.")
     path = parsed.path.strip("/").removesuffix(".git")
     parts = path.split("/")
     if len(parts) < 2 or not parts[0] or not parts[1]:
-        raise BadRequest("Could not parse owner/repo from URL.")
+        raise BadRequest("Couldn't read an owner/repo out of that URL.")
     return parts[0], parts[1]
 
 
 def get_repo(token: str, owner: str, repo: str) -> dict[str, Any]:
+    """Look up a repo by ``owner/name``.
+
+    Note: ``urllib`` silently follows GitHub's 301 redirect on rename, so this
+    call still succeeds against the old name and returns the *new* repo's
+    details. Use ``id`` from the response to anchor future lookups.
+    """
     _, payload = _request("GET", f"/repos/{owner}/{repo}", token)
+    return _normalize_repo(payload)
+
+
+def get_repo_by_id(token: str, repo_id: int) -> dict[str, Any]:
+    """Look up a repo by its stable numeric id (survives renames + transfers)."""
+    _, payload = _request("GET", f"/repositories/{repo_id}", token)
+    return _normalize_repo(payload)
+
+
+def _normalize_repo(payload: dict[str, Any]) -> dict[str, Any]:
     return {
+        "id": payload["id"],
         "owner": payload["owner"]["login"],
         "name": payload["name"],
         "full_name": payload["full_name"],
@@ -176,6 +208,51 @@ def get_repo(token: str, owner: str, repo: str) -> dict[str, Any]:
         "private": payload["private"],
         "permissions": payload.get("permissions", {}),
     }
+
+
+def resolve_current(token: str, stored: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Reconcile a stored repo dict against GitHub's live state.
+
+    Prefers looking up by the stable numeric ``id`` (survives renames and
+    ownership transfers). Falls back to ``owner/name`` lookup for legacy
+    configs that don't have a real id yet — those will be promoted on first
+    read so subsequent calls anchor on the id.
+
+    Returns ``(canonical, changed)`` where ``canonical`` is the merged repo
+    dict the caller should use going forward, and ``changed`` is True when
+    ``owner``, ``name``, ``full_name``, ``default_branch``, or ``id`` differ
+    from the stored values. The caller is responsible for persisting
+    ``canonical`` to DynamoDB when ``changed`` is True.
+    """
+    repo_id = stored.get("id")
+    if not isinstance(repo_id, int) or repo_id <= 0:
+        # Legacy: older configs stored "repo_id": "default" as a placeholder.
+        legacy = stored.get("repo_id")
+        repo_id = legacy if isinstance(legacy, int) and legacy > 0 else None
+
+    if repo_id is not None:
+        live = get_repo_by_id(token, repo_id)
+    else:
+        owner = stored.get("owner")
+        name = stored.get("name")
+        if not owner or not name:
+            raise BadRequest("Repo isn't connected yet — connect it on the GitHub page first.")
+        live = get_repo(token, owner, name)
+
+    canonical = {
+        **{k: v for k, v in stored.items() if k != "repo_id"},
+        "id": live["id"],
+        "owner": live["owner"],
+        "name": live["name"],
+        "full_name": live["full_name"],
+        "default_branch": live["default_branch"],
+        "url": live.get("html_url", stored.get("url")),
+        "description": live.get("description", stored.get("description")),
+        "private": live.get("private", stored.get("private")),
+    }
+    drift_keys = ("id", "owner", "name", "full_name", "default_branch")
+    changed = any(stored.get(k) != canonical.get(k) for k in drift_keys)
+    return canonical, changed
 
 
 def get_last_commit(token: str, owner: str, repo: str, branch: str) -> dict[str, Any] | None:
@@ -199,7 +276,11 @@ def get_last_commit(token: str, owner: str, repo: str, branch: str) -> dict[str,
 def list_tree(token: str, owner: str, repo: str, branch: str) -> list[dict[str, Any]]:
     """Return a flat list of tree entries (files + dirs) on the given branch."""
     _, payload = _request("GET", f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1", token)
-    return payload.get("tree", [])
+    tree = payload.get("tree", [])
+    # GitHub's /git/trees endpoint isn't paginable — a partial list is the best we can get.
+    if payload.get("truncated"):
+        log.warn("github tree truncated", owner=owner, repo=repo, branch=branch, entries=len(tree))
+    return tree
 
 
 def get_file(token: str, owner: str, repo: str, path: str, branch: str) -> dict[str, Any]:
@@ -213,21 +294,24 @@ def get_file(token: str, owner: str, repo: str, path: str, branch: str) -> dict[
     return payload
 
 
-def decode_file(file_obj: dict[str, Any]) -> str:
+def decode_file(file_obj: dict[str, Any]) -> str | None:
     """Decode a :func:`get_file` payload to text.
 
     Returns ``""`` for empty files or blobs GitHub won't inline (it sends
     ``encoding: "none"`` with empty content for files > 1 MB — the executor's
     size filter keeps us well under that, but be defensive). ``b64decode``
     with the default ``validate=False`` already discards the newlines GitHub
-    interleaves into the base64.
+    interleaves into the base64. Returns None if the file isn't valid UTF-8.
     """
     if file_obj.get("encoding") != "base64":
         return ""
     content = file_obj.get("content") or ""
     if not content:
         return ""
-    return base64.b64decode(content).decode("utf-8", errors="replace")
+    try:
+        return base64.b64decode(content).decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
 
 
 def put_file(

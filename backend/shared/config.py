@@ -9,8 +9,10 @@ and ``save_config``.
 
 from typing import Any
 
-from shared import ddb
-from shared.errors import BadRequest
+from botocore.exceptions import ClientError
+
+from shared import ddb, log
+from shared.errors import BadRequest, UpstreamError
 
 DAYS: tuple[str, ...] = (
     "monday",
@@ -65,20 +67,50 @@ def load_config(user_id: str = "default") -> dict[str, Any]:
         return default_config()
     item.pop("pk", None)
     item.pop("sk", None)
+    # Stored items can drift (manual DDB edits, schema bumps) — fall back to a
+    # known-good default rather than letting callers blow up on KeyError.
+    try:
+        validate_config(item)
+    except BadRequest as exc:
+        log.error("load_config validation failed; falling back to default", detail=str(exc))
+        return default_config()
     return item
 
 
 def save_config(config: dict[str, Any], user_id: str = "default") -> dict[str, Any]:
     validate_config(config)
-    ddb.put_item(ddb.user_pk(user_id), ddb.SK_CONFIG, config)
-    return config
+    expected_version = config.get("version")
+    next_config = dict(config)
+    next_config["version"] = int(expected_version or 0) + 1
+    # First write (no prior item) uses expected_version=None so the conditional
+    # check is "must not exist" instead of "version must match".
+    prior_exists = expected_version is not None and expected_version >= 1
+    ddb.put_item_conditional(
+        ddb.user_pk(user_id),
+        ddb.SK_CONFIG,
+        next_config,
+        expected_version if prior_exists else None,
+    )
+    return next_config
 
 
 def merge_patch(patch: dict[str, Any], user_id: str = "default") -> dict[str, Any]:
     """Deep-merge ``patch`` into the current config and persist."""
-    current = load_config(user_id)
-    merged = _deep_merge(current, patch)
-    return save_config(merged, user_id)
+    for attempt in range(3):
+        current = load_config(user_id)
+        merged = _deep_merge(current, patch)
+        merged["version"] = current.get("version", 1)
+        try:
+            return save_config(merged, user_id)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            log.warn("merge_patch lost a race; retrying", attempt=attempt + 1)
+    raise UpstreamError(
+        "Couldn't save your config — something else updated it at the same time. "
+        "Give it another try in a moment.",
+        code="config_save_conflict",
+    )
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -124,11 +156,15 @@ def validate_config(c: dict[str, Any]) -> None:
         _require(day_cfg, "enabled", bool)
         _require_time(day_cfg, "start")
         _require_time(day_cfg, "end")
+        if day_cfg["enabled"] and day_cfg["start"] >= day_cfg["end"]:
+            raise BadRequest(f"schedule.{day}.start must be earlier than schedule.{day}.end.")
 
     _require(c, "commit_style", dict)
     _require(c["commit_style"], "prompt", str)
     if not c["commit_style"]["prompt"].strip():
         raise BadRequest("commit_style.prompt must not be empty.")
+    if len(c["commit_style"]["prompt"].strip()) > 2000:
+        raise BadRequest("commit_style.prompt must be 2000 characters or fewer.")
     p = c["commit_style"].get("destructive_probability", 0)
     if not isinstance(p, (int, float)) or not (0.0 <= float(p) <= 1.0):
         raise BadRequest("commit_style.destructive_probability must be in [0, 1].")

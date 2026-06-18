@@ -13,7 +13,7 @@ interface NumberInputProps {
 export function NumberInput({ label, value, onChange, placeholder }: NumberInputProps) {
   return (
     <label className="block">
-      <span className="text-xs tracking-wide text-slate-500 uppercase">{label}</span>
+      <span className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">{label}</span>
       <input
         type="text"
         inputMode="numeric"
@@ -21,7 +21,7 @@ export function NumberInput({ label, value, onChange, placeholder }: NumberInput
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
-        className="mt-1 w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 font-mono text-lg text-slate-100 tabular-nums placeholder:text-slate-600 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+        className="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 font-mono text-lg text-[var(--color-fg)] tabular-nums placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
       />
     </label>
   )
