@@ -93,7 +93,7 @@ jobs:
   deploy-dev:
     name: Deploy → dev AWS account
     needs: [python-lint-test, frontend-lint-build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && vars.CI_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # required to request the OIDC token

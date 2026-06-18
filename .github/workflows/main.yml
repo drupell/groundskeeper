@@ -254,7 +254,7 @@ jobs:
       - secrets-scan
       - codeql
       - strict-types
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CI_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: prod-deploy   # add a required-reviewer rule here in repo settings
     permissions:

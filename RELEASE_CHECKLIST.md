@@ -133,9 +133,18 @@ The `deploy-prod` job in `main.yml` declares `environment: prod-deploy`. Create 
 - Required reviewers → add yourself
 - (Optional) Deployment branches: restrict to `main`
 
-### E) Confirm
+### E) Flip the CI deploy switch
 
-After A–D, push a no-op commit to `dev` and watch the `dev.yml` run go all the way through `deploy-dev`. Then open a PR `dev → main`, merge, approve the `prod-deploy` environment prompt, and watch `main.yml` go through `deploy-prod`. Resources end up with `project=groundskeeper` + `environment=<env>` on both sides.
+The `deploy-dev` and `deploy-prod` jobs gate on a **repository variable** so they don't fail on first push before secrets are in place. Once A–D are done:
+
+- Settings → Secrets and variables → Actions → **Variables** → New repository variable
+- Name: `CI_DEPLOY_ENABLED`, Value: `true`
+
+Until this variable equals `"true"`, both deploy jobs skip cleanly (status shows "skipped"). The lint/test/security gates still run on every push.
+
+### F) Confirm
+
+After A–E, push a no-op commit to `dev` and watch the `dev.yml` run go all the way through `deploy-dev`. Then open a PR `dev → main`, merge, approve the `prod-deploy` environment prompt, and watch `main.yml` go through `deploy-prod`. Resources end up with `project=groundskeeper` + `environment=<env>` on both sides.
 
 ## GitHub repo prep
 
