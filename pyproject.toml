@@ -1,9 +1,32 @@
+[project]
+name = "groundskeeper"
+version = "0.1.0"
+description = "Personal AWS-deployed tool that automates realistic-looking GitHub commits on a repo you own."
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.34",
+    "rich>=13",
+    "questionary>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "black>=24",
+    "ruff>=0.5",
+    "pytest>=8",
+]
+security = [
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+]
+
 [tool.black]
 line-length = 100
-target-version = ["py310", "py311", "py312"]
+target-version = ["py312"]
 extend-exclude = '''
 /(
-    \.venv-deploy
+    \.venv
+  | \.venv-deploy
   | \.venv-dev
   | \.groundskeeper-build
   | frontend/node_modules
@@ -12,8 +35,9 @@ extend-exclude = '''
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 extend-exclude = [
+    ".venv",
     ".venv-deploy",
     ".venv-dev",
     ".groundskeeper-build",
@@ -21,15 +45,16 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "W"]
 ignore = [
     "E501",  # line length is enforced by Black
     "B008",  # function calls in argument defaults — false-positives on FastAPI-style code
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# deploy.py intentionally places third-party imports after a venv-bootstrap
-# block, so it must opt out of "imports at top of file" and import sorting.
+# deploy.py / teardown.py intentionally place third-party imports after a
+# uv-bootstrap block, so they opt out of "imports at top of file" and import
+# sorting.
 "deploy.py" = ["E402", "I001"]
 "teardown.py" = ["E402", "I001"]
 
