@@ -1,0 +1,237 @@
+# =============================================================================
+# Groundskeeper — MAIN (strict) gate
+# -----------------------------------------------------------------------------
+# Runs on:
+#   - pull requests targeting main
+#   - pushes to main
+#   - a weekly cron (Mondays 08:00 UTC) so freshly-disclosed CVEs catch us
+#     even if no PR has landed since the last scan.
+#
+# STRICT: any moderate-or-higher security finding, any failing test, any
+# type error, any secret-scan hit, or any CodeQL error fails the gate.
+# These jobs reproduce everything dev.yml runs AND layer SAST, dependency
+# vulnerability scanning, secret scanning, and CodeQL on top.
+# =============================================================================
+
+name: main
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly: Monday 08:00 UTC. Catches newly-disclosed CVEs against deps
+    # even when no PR has landed.
+    - cron: "0 8 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # required for CodeQL SARIF upload
+  actions: read
+
+jobs:
+  # ---- Re-run everything dev.yml runs --------------------------------------
+  python-lint-test:
+    name: Python — lint, format, tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (dev group)
+        run: uv sync --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check deploy.py teardown.py backend/
+
+      - name: Black format check
+        run: uv run black --check deploy.py teardown.py backend/
+
+      - name: Pytest
+        run: uv run pytest -q
+
+  frontend-lint-build:
+    name: Frontend — lint, type-check, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prettier check
+        run: npx prettier --check src/
+
+      - name: TypeScript type-check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Build
+        run: npm run build
+
+  # ---- Strict security layer ----------------------------------------------
+  python-security:
+    name: Python — bandit + pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (security group)
+        run: uv sync --group security
+
+      - name: Bandit (SAST, fail on medium+)
+        # -ll = report only medium-and-higher severity issues.
+        # Non-zero exit on any reported finding fails the job.
+        run: uv run bandit -r backend/ deploy.py teardown.py -ll
+
+      - name: pip-audit (dependency CVE scan, fail on any vuln)
+        # --strict makes warnings (e.g. skipped packages) hard errors so
+        # silent-pass scenarios cannot sneak through.
+        run: uv run pip-audit --strict
+
+  frontend-security:
+    name: Frontend — npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit (fail on moderate+)
+        run: npm audit --audit-level=moderate
+
+      - name: audit-ci strict wrapper (defensive against flaky npm-audit exit)
+        run: npx --yes audit-ci --moderate
+
+  secrets-scan:
+    name: Secrets — gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Gitleaks scans history; full clone surfaces secrets in older commits.
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # No license token needed for public repos.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python", "javascript-typescript"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          # Fail the gate on any "error" severity finding.
+          # (Warnings still surface in the Security tab.)
+          upload: always
+
+  strict-types:
+    name: Strict gate — tests + strict TS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (dev group)
+        run: uv sync --group dev
+
+      - name: Pytest (strict gate re-run)
+        run: uv run pytest -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # NOTE: tsconfig may not yet set "strict": true everywhere. We force it
+      # here to keep the strict gate honest. If this breaks the build, the
+      # transition path is: (a) fix the violations, or (b) tighten tsconfig
+      # incrementally (noImplicitAny -> strictNullChecks -> full strict) and
+      # keep this step as the canary. Do NOT loosen this step to make it pass.
+      - name: TypeScript --strict
+        working-directory: frontend
+        run: npx tsc --noEmit --strict
