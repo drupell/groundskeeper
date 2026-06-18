@@ -11,6 +11,20 @@ deploy-state.json) that teardown.py uses to clean up.
 Re-running the script is idempotent — it reuses existing resources by name
 when state is missing and updates in place otherwise.
 
+Two modes:
+
+  1. Default deploy mode — the full guided walk-through above. Just run
+     `python deploy.py --environment {dev,prod}`.
+
+  2. `--bootstrap-oidc <owner>/<repo>` — a separate one-shot that wires up the
+     GitHub Actions OIDC trust into the current AWS account. Creates the
+     OIDC provider (if missing) and the per-environment deploy role
+     (default name: groundskeeper-ci-deploy) trusted to assume from the
+     matching branch (dev→refs/heads/dev, prod→refs/heads/main). Does NOT
+     touch any deploy resources — run it once per AWS account before CI
+     can deploy. See RELEASE_CHECKLIST.md → "CI deploy bootstrap" for the
+     hand-rolled alternative.
+
 Prerequisites:
   - Python 3.12+
   - uv (https://docs.astral.sh/uv/#installation)
@@ -143,6 +157,24 @@ LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MEMORY_MB = 256
 
 BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0"
+
+# ---------------------------------------------------------------------------
+# OIDC bootstrap — wires up GitHub Actions → AWS (one-shot, separate mode).
+# ---------------------------------------------------------------------------
+GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com"
+GITHUB_OIDC_HOST = "token.actions.githubusercontent.com"
+GITHUB_OIDC_AUDIENCE = "sts.amazonaws.com"
+# Thumbprint for token.actions.githubusercontent.com — see GitHub's docs at:
+# https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+GITHUB_OIDC_THUMBPRINT = "6938fd4d98bab03faadb97b34396831e3780aea1"
+DEFAULT_CI_DEPLOY_ROLE_NAME = f"{PREFIX}-ci-deploy"
+CI_DEPLOY_ROLE_POLICY_ARN = "arn:aws:iam::aws:policy/AdministratorAccess"
+# dev → refs/heads/dev, prod → refs/heads/main (matches the CI workflows).
+ENVIRONMENT_BRANCH = {"dev": "dev", "prod": "main"}
+GITHUB_SECRET_NAME = {
+    "dev": "AWS_DEV_DEPLOY_ROLE_ARN",
+    "prod": "AWS_PROD_DEPLOY_ROLE_ARN",
+}
 
 # Orchestrator fires daily at 12:00 UTC — chosen so it lands in the morning
 # for US/EU users (07:00 EST / 08:00 EDT / 12:00 GMT / 13:00 BST / 14:00 CEST)
@@ -1670,6 +1702,221 @@ def print_summary(state: dict, environment: str, dashboard_url: str | None) -> N
 
 
 # ---------------------------------------------------------------------------
+# OIDC bootstrap mode (--bootstrap-oidc) — separate one-shot.
+# ---------------------------------------------------------------------------
+def _parse_repo_slug(slug: str) -> tuple[str, str]:
+    """Validate and split an `owner/repo` GitHub slug."""
+    parts = slug.strip().split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise argparse.ArgumentTypeError(f"--bootstrap-oidc expects OWNER/REPO (got {slug!r}).")
+    owner, repo = parts
+    # GitHub repo + owner names use [A-Za-z0-9._-]; we don't try to be exhaustive
+    # here — just catch obvious mistakes like embedded spaces or empty segments.
+    bad = set(" \t\n\r")
+    if bad & set(owner) or bad & set(repo):
+        raise argparse.ArgumentTypeError(
+            f"--bootstrap-oidc OWNER/REPO can't contain whitespace (got {slug!r})."
+        )
+    return owner, repo
+
+
+def _oidc_provider_arn(account: str) -> str:
+    return f"arn:aws:iam::{account}:oidc-provider/{GITHUB_OIDC_HOST}"
+
+
+def _ensure_oidc_provider(iam, account: str) -> tuple[str, bool]:
+    """Idempotently create the GitHub OIDC provider. Returns (arn, created)."""
+    desired_arn = _oidc_provider_arn(account)
+    existing = iam.list_open_id_connect_providers().get("OpenIDConnectProviderList", [])
+    for entry in existing:
+        if entry.get("Arn") == desired_arn:
+            step(f"Reusing OIDC provider {GITHUB_OIDC_HOST}")
+            return desired_arn, False
+    resp = iam.create_open_id_connect_provider(
+        Url=GITHUB_OIDC_URL,
+        ClientIDList=[GITHUB_OIDC_AUDIENCE],
+        ThumbprintList=[GITHUB_OIDC_THUMBPRINT],
+    )
+    step(f"Created OIDC provider {GITHUB_OIDC_HOST}")
+    return resp["OpenIDConnectProviderArn"], True
+
+
+def _ci_deploy_trust_policy(account: str, owner: str, repo: str, branch: str) -> dict:
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"Federated": _oidc_provider_arn(account)},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                    "StringEquals": {
+                        f"{GITHUB_OIDC_HOST}:aud": GITHUB_OIDC_AUDIENCE,
+                    },
+                    "StringLike": {
+                        f"{GITHUB_OIDC_HOST}:sub": (f"repo:{owner}/{repo}:ref:refs/heads/{branch}"),
+                    },
+                },
+            }
+        ],
+    }
+
+
+def _ensure_ci_deploy_role(
+    iam, role_name: str, trust_policy: dict, environment: str
+) -> tuple[str, bool]:
+    """Create or update the CI deploy role. Returns (arn, created)."""
+    desired_tags = tag_list(environment)
+    trust_doc = json.dumps(trust_policy)
+    created = False
+    try:
+        iam.create_role(
+            RoleName=role_name,
+            AssumeRolePolicyDocument=trust_doc,
+            Description=(
+                f"{PROJECT_NAME} CI deploy role — assumed by GitHub Actions "
+                f"via OIDC for the {environment} environment."
+            ),
+            Tags=desired_tags,
+        )
+        step(f"Created role {role_name}")
+        created = True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "EntityAlreadyExists":
+            raise
+        step(f"Reusing role {role_name}")
+        iam.update_assume_role_policy(RoleName=role_name, PolicyDocument=trust_doc)
+        iam.tag_role(RoleName=role_name, Tags=desired_tags)
+
+    # AdministratorAccess attach is idempotent — re-attaching the same managed
+    # policy is a no-op and does not raise.
+    iam.attach_role_policy(RoleName=role_name, PolicyArn=CI_DEPLOY_ROLE_POLICY_ARN)
+    role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
+    return role_arn, created
+
+
+def _print_oidc_summary(
+    account: str,
+    region: str,
+    environment: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    role_name: str,
+    role_arn: str,
+    provider_arn: str,
+) -> None:
+    section("Summary")
+    t = Table(show_header=False, box=None, padding=(0, 2))
+    t.add_column(style="dim")
+    t.add_column()
+    t.add_row("Account", account)
+    t.add_row("Region", region)
+    t.add_row("Environment", environment)
+    t.add_row("Repo", f"{owner}/{repo}")
+    t.add_row("Trusted branch", f"refs/heads/{branch}")
+    t.add_row("OIDC provider ARN", provider_arn)
+    t.add_row("Role name", role_name)
+    t.add_row("Role ARN", role_arn)
+    t.add_row("Managed policy", CI_DEPLOY_ROLE_POLICY_ARN)
+    console.print(t)
+    secret_name = GITHUB_SECRET_NAME[environment]
+    console.print()
+    console.print(
+        Panel(
+            "[bold]Next step[/bold]\n"
+            f"  In the [bold]{owner}/{repo}[/bold] GitHub repo settings, "
+            f"add the role ARN as a repo secret named:\n"
+            f"    [bold]{secret_name}[/bold] = {role_arn}\n\n"
+            f"  See [bold]RELEASE_CHECKLIST.md[/bold] → "
+            f"'CI deploy bootstrap' → step C for the full secret table.",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+
+
+def bootstrap_oidc(args: argparse.Namespace) -> None:
+    """`--bootstrap-oidc` entry point. Sets up GitHub OIDC + the CI deploy role
+    in the current AWS account. Stays entirely off the regular deploy path —
+    no state file, no Lambda/DDB/API touch."""
+    owner, repo = _parse_repo_slug(args.bootstrap_oidc)
+    environment: str = args.environment
+    branch = ENVIRONMENT_BRANCH[environment]
+    role_name = args.role_name or DEFAULT_CI_DEPLOY_ROLE_NAME
+
+    banner(
+        f"{PROJECT_NAME} OIDC bootstrap",
+        f"Wires GitHub Actions for [bold]{owner}/{repo}[/bold] "
+        f"(branch [bold]{branch}[/bold]) into the current AWS account so "
+        f"the [bold]{environment}[/bold] CI workflow can deploy.",
+    )
+
+    account, region, _caller = confirm_account_and_region(
+        args.region,
+        expected_account=args.account,
+        non_interactive=args.yes,
+    )
+
+    section("Plan")
+    rows = [
+        (
+            "OIDC provider",
+            GITHUB_OIDC_HOST,
+            "Lets GitHub Actions vend short-lived AWS credentials. "
+            "Idempotent — reused if already present.",
+        ),
+        (
+            "IAM role",
+            role_name,
+            f"Trusts {owner}/{repo}@refs/heads/{branch} via OIDC. "
+            f"Attaches {CI_DEPLOY_ROLE_POLICY_ARN}.",
+        ),
+    ]
+    plan = Table(show_lines=False, padding=(0, 2))
+    plan.add_column("Kind", style="cyan", no_wrap=True)
+    plan.add_column("Name", style="bold")
+    plan.add_column("Why")
+    for k, n, w in rows:
+        plan.add_row(k, n, w)
+    console.print(plan)
+    console.print(
+        f"\n  Role tags: [bold]{PROJECT_TAG_KEY}={PROJECT_TAG_VALUE}[/bold] + "
+        f"[bold]{ENVIRONMENT_TAG_KEY}={environment}[/bold]."
+    )
+
+    if not args.yes:
+        if not questionary.confirm(
+            "Create / update these IAM resources in this account?", default=True
+        ).ask():
+            console.print("[dim]Aborted.[/dim]")
+            sys.exit(0)
+
+    section("IAM")
+    iam = boto3.session.Session(region_name=region).client(
+        "iam",
+        config=BotoConfig(retries={"max_attempts": 10, "mode": "adaptive"}),
+    )
+
+    provider_arn, _ = _ensure_oidc_provider(iam, account)
+    trust_policy = _ci_deploy_trust_policy(account, owner, repo, branch)
+    role_arn, _ = _ensure_ci_deploy_role(iam, role_name, trust_policy, environment)
+    ok(f"{role_name} ready.")
+
+    _print_oidc_summary(
+        account,
+        region,
+        environment,
+        owner,
+        repo,
+        branch,
+        role_name,
+        role_arn,
+        provider_arn,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -1703,11 +1950,47 @@ def main() -> None:
         help=(
             "Environment to tag resources with — written as `environment=<env>` "
             "alongside `project=groundskeeper`. Used by teardown.py to scope "
-            "discovery to a single environment. Resource names are unchanged."
+            "discovery to a single environment. Resource names are unchanged. "
+            "With --bootstrap-oidc, controls which branch the deploy role "
+            "trusts (dev→refs/heads/dev, prod→refs/heads/main)."
+        ),
+    )
+    parser.add_argument(
+        "--bootstrap-oidc",
+        metavar="OWNER/REPO",
+        help=(
+            "One-shot mode: create the GitHub OIDC provider + the per-account "
+            "CI deploy role in the current AWS account. Mutually exclusive "
+            "with the regular deploy — no Lambda/DDB/API resources are touched."
+        ),
+    )
+    parser.add_argument(
+        "--role-name",
+        help=(
+            f"With --bootstrap-oidc, name of the IAM role to create / update "
+            f"(default: {DEFAULT_CI_DEPLOY_ROLE_NAME}). Ignored otherwise."
         ),
     )
     args = parser.parse_args()
     environment: str = args.environment
+
+    # OIDC bootstrap is its own mode — branch off before any regular deploy
+    # work runs. It does not touch deploy state and does not create any
+    # Lambda/DDB/API resources.
+    if args.bootstrap_oidc:
+        if args.skip_frontend or args.non_interactive:
+            sys.stderr.write(
+                "ERROR: --bootstrap-oidc is a separate one-shot mode; it does "
+                "not accept --skip-frontend or --non-interactive. Pass --yes "
+                "to skip the confirmation prompt.\n"
+            )
+            sys.exit(2)
+        bootstrap_oidc(args)
+        return
+
+    if args.role_name:
+        sys.stderr.write("ERROR: --role-name only applies with --bootstrap-oidc.\n")
+        sys.exit(2)
 
     if args.non_interactive and not args.account:
         sys.stderr.write(
