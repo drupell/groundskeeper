@@ -1774,7 +1774,7 @@ def _ensure_ci_deploy_role(
             RoleName=role_name,
             AssumeRolePolicyDocument=trust_doc,
             Description=(
-                f"{PROJECT_NAME} CI deploy role — assumed by GitHub Actions "
+                f"{PROJECT_NAME} CI deploy role: assumed by GitHub Actions "
                 f"via OIDC for the {environment} environment."
             ),
             Tags=desired_tags,
