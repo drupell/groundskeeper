@@ -22,9 +22,9 @@ One-time checklist for the maintainer to walk through **before** pushing the pub
 - [ ] `cd frontend && npm audit --audit-level=moderate` (no moderate+ findings)
 - [ ] `gitleaks detect --source . --verbose` on the working tree (no leaks)
 - [ ] CodeQL: enabled in GitHub repo settings (Security → Code scanning → Set up → Default)
-- [ ] Confirm NO personal AWS account ids / ARNs / dashboard URLs are in any committed file:
-  - [ ] `git grep "845517756240"` returns nothing
-  - [ ] `git grep "d1w4l2zuc5eoku"` returns nothing (Amplify app id)
+- [ ] Confirm NO personal AWS account ids / ARNs / dashboard URLs are in any committed file. Substitute YOUR values for the angle-bracket placeholders before running:
+  - [ ] `git grep "<YOUR_AWS_ACCOUNT_ID>"` returns nothing
+  - [ ] `git grep "<YOUR_AMPLIFY_APP_ID>"` returns nothing (the d1w4l2... subdomain in your Amplify URL)
   - [ ] `git grep -E "[a-z0-9]+\.execute-api\.us-east-1\.amazonaws\.com"` returns nothing (the generic hostname in docs is fine; specific subdomains are not)
   - [ ] `git grep -E "arn:aws:[a-z]+:[a-z0-9-]*:[0-9]{12}:"` returns nothing
 
@@ -36,7 +36,7 @@ One-time checklist for the maintainer to walk through **before** pushing the pub
 - [ ] No `.env*` files staged: `git ls-files | grep -E '\.env'` returns nothing (except `.env.example` if present)
 - [ ] PAT scrubbed from any test fixture: `git grep -E 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}'` returns nothing
 - [ ] Paranoid history sweep: `git log --all --full-history -p | grep -iE 'ghp_|github_pat_|aws_secret_access_key|AKIA[0-9A-Z]{16}'` returns nothing
-- [ ] No Secrets Manager secret names tied to your personal account in code (search for `groundskeeper-prod-github-token` etc. is fine — those are generic names — but `arn:aws:secretsmanager:...:845517756240:...` is not)
+- [ ] No Secrets Manager secret names tied to your personal account in code (the generic name `groundskeeper/github-pat` is fine; `arn:aws:secretsmanager:...:<YOUR_AWS_ACCOUNT_ID>:...` is not)
 
 ## Docs
 
@@ -45,7 +45,8 @@ One-time checklist for the maintainer to walk through **before** pushing the pub
 - [ ] `LICENSE` present, MIT, correct year (2026) and name (Dave Drupell — TODO: confirm exact name to use)
 - [ ] `CONTRIBUTING.md` present (TODO: confirm file exists or create stub before release)
 - [ ] No AI-tool mentions in any committed file:
-  - [ ] `git grep -il -E 'claude|anthropic|cursor|copilot|gpt-[0-9]|chatgpt|openai'` returns nothing
+  - [ ] `git grep -il -E '\b(claude|anthropic|copilot|chatgpt|openai)\b|gpt-[0-9]'` returns nothing
+        (CSS `cursor:` / Tailwind `cursor-pointer` / React `useCursor` will false-positive on a bare `cursor` substring — the word-boundary form above excludes them)
 - [ ] No TODO/FIXME comments that reference internal-only context: `git grep -nE 'TODO|FIXME|XXX|HACK'` reviewed line-by-line
 
 ## AWS

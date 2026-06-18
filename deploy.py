@@ -1604,7 +1604,10 @@ def ensure_amplify(
         req = urllib.request.Request(upload_url, data=f.read(), method="PUT")
         req.add_header("Content-Type", "application/zip")
         try:
-            urllib.request.urlopen(req, timeout=120)
+            # bandit B310: upload_url is an https pre-signed URL minted seconds
+            # ago by amplify.create_deployment; not user-supplied or
+            # attacker-influenced.
+            urllib.request.urlopen(req, timeout=120)  # nosec B310
         except urllib.error.HTTPError as e:
             fail(f"Upload failed: {e.code} {e.read().decode(errors='ignore')}")
             raise

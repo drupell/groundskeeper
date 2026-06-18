@@ -35,7 +35,9 @@ def _request(
     if body is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
+        # bandit B310: url is always f"{_API}{path}" where _API hardcodes
+        # https://api.github.com; never user-controlled.
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310
             raw = resp.read()
             payload: Any = json.loads(raw.decode()) if raw else {}
             return resp.status, _wrap(payload, resp.headers)
@@ -50,11 +52,12 @@ def _request(
             raise Unauthorized(message, code="github_unauthorized") from e
         if e.code == 404:
             raise UpstreamError(message, code="github_not_found", status_code=404) from e
-        if e.code in (301, 308):
+        if e.code in (301, 307, 308):
             # urllib follows redirects silently on GET/HEAD but raises here on
             # PUT/POST/DELETE. For our flow that almost always means the repo
             # was renamed or transferred — the caller should re-resolve via
-            # the stable numeric repo id and retry.
+            # the stable numeric repo id and retry. (307 = temporary redirect;
+            # GitHub uses it for some rename-still-propagating cases.)
             raise UpstreamError(
                 "The repo seems to have been renamed or moved on GitHub. "
                 "Refresh the GitHub page in the dashboard to pick up the new name.",
