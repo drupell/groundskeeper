@@ -1,17 +1,16 @@
 # Groundskeeper
 
-Groundskeeper is a framework for handing an LLM a repository you own plus a
-rough direction, then watching what it actually chooses to do with it. You
-point it at a repo, write a short style prompt, and shape a per-day
+Groundskeeper is a framework for handing an LLM a repository you own plus
+a rough direction, then watching what it actually chooses to do with it.
+You point it at a repo, write a short style prompt, and shape a per-day
 commit-count curve. Once a day, an agent picks an eligible file, decides
 between a creative edit (additive content matching your prompt) or a
 destructive edit (removing or restructuring a small section), and commits
-the result. Over time the project accumulates a corpus of those choices —
-which files the agent kept reaching for, what tone it landed on, what it
-left alone.
+the result. Over time you get a corpus of those choices: which files it
+reached for, what tone it landed on, what it left alone.
 
-[![dev](https://github.com/OWNER/REPO/actions/workflows/dev.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/dev.yml)
-[![main](https://github.com/OWNER/REPO/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/OWNER/REPO/actions/workflows/main.yml)
+[![dev](https://github.com/drupell/groundskeeper/actions/workflows/dev.yml/badge.svg)](https://github.com/drupell/groundskeeper/actions/workflows/dev.yml)
+[![main](https://github.com/drupell/groundskeeper/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/drupell/groundskeeper/actions/workflows/main.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ## What it does
@@ -27,8 +26,8 @@ As each scheduled time arrives, a second Lambda reads the repo, picks an
 eligible file, and asks Amazon Bedrock (Nova Lite) to choose between a
 creative or destructive edit and produce the patch plus commit message. The
 result lands via the GitHub Contents API as an ordinary commit, authored by
-the verified user behind your token. Every decision — file chosen, edit
-mode, prompt used, model output, success or failure — gets a row in
+the verified user behind your token. Every decision (file chosen, edit
+mode, prompt used, model output, success or failure) gets a row in
 DynamoDB. That log is the artifact: a record of how the agent behaved over
 days and weeks against a single body of code.
 
@@ -89,7 +88,7 @@ services, and is fully removable with the companion `teardown.py` script.
 
 This first release is the foundation: enough to run a real observation loop
 end-to-end against one repo, with one model, on one AWS account. The arc
-beyond that is real but deliberately not in this release.
+beyond is real but not in this release.
 
 **Shipped in v0.1.0:**
 
@@ -98,7 +97,7 @@ beyond that is real but deliberately not in this release.
   scaffold (creative vs destructive edit).
 - One observer: a single dashboard user, basic-auth'd, with full read/write
   on schedule, prompt, curve, and vacation toggle.
-- A complete per-commit log in DynamoDB — file picked, edit mode, prompt,
+- A complete per-commit log in DynamoDB: file picked, edit mode, prompt,
   model output, GitHub result.
 - Fully tagged, fully removable AWS deployment via `deploy.py` and
   `teardown.py`.
@@ -123,16 +122,16 @@ Please read these before deploying.
 
 - **Every commit is LLM-authored.** Content and message both come from
   Bedrock Nova Lite, generated against the prompt you wrote and the file
-  the agent picked. The commits are real — real SHAs, authored as the user
-  behind your token — but they're not your work, and the whole purpose of
+  the agent picked. The commits are real (real SHAs, authored as the user
+  behind your token), but they're not your work, and the whole purpose of
   this project is to observe the agent honestly. Be honest with yourself
   and anyone reading the repo about who wrote them.
 - **The contribution graph counts them.** Groundskeeper exists to study
   agent behavior, not to game GitHub. But the commits are normal commits,
   so they show up on your graph. Don't point this at a repo where that
-  misrepresents you — shared repos, work repos, or anything that implies
-  human authorship matters. Use it on a personal repo you own and have
-  flagged as an experiment.
+  misrepresents you: shared repos, work repos, or anything where human
+  authorship matters. Use it on a personal repo you own and have flagged
+  as an experiment.
 - **Single-tenant by design.** v0.1.0 is one user, one dashboard password,
   one GitHub token, one repo, one model. Multi-repo, multi-agent, and
   hosted-service work belongs in later versions; PRs that bolt on
@@ -196,7 +195,7 @@ What you'll see, in order:
    another yes/no confirmation. (Pass `--yes` on subsequent runs to skip
    this once you've reviewed it.)
 3. Per-resource progress with a `→` while it's working and a `✓` when it
-   succeeds. Idempotent — re-running reuses anything already there.
+   succeeds. Idempotent; re-running reuses anything already there.
 4. A prompt for the dashboard password. This becomes the Amplify basic-auth
    password for the user `admin`. Pick something memorable; you can rotate
    it later from the dashboard.
@@ -214,22 +213,22 @@ Open the URL, log in, and continue with [Using the dashboard](#using-the-dashboa
 
 ## Using the dashboard
 
-Set things up in the order below. You can come back and tune anything at
-any time — every change saves immediately to DynamoDB and takes effect on
-the next orchestrator run.
+Set things up in the order below. You can come back and tune anything
+later. Every change saves to DynamoDB immediately and takes effect on the
+next orchestrator run.
 
-**Step 1 — connect GitHub.** Sidebar → _GitHub_. Paste your personal access
+**Step 1, connect GitHub.** Sidebar → _GitHub_. Paste your personal access
 token and click _Verify token_. A preview card shows the avatar, name,
 email, and scopes the token carries. If the `repo` scope is missing, the
-dashboard tells you and refuses to save. Click _Save this token_ — it's
+dashboard tells you and refuses to save. Click _Save this token_. It's
 written to Secrets Manager, never to DynamoDB or logs. Then in the
 _Repository_ card, paste the URL (or `owner/repo`) of the repo you want to
 commit to and click _Validate & save_. The card shows the default branch,
 last commit, and a warning if your token can't push. If you rename the repo
 on GitHub later, Groundskeeper detects the redirect and updates the stored
-repo identifier automatically on the next read or run — no manual fix.
+repo identifier automatically on the next read or run. No manual fix.
 
-**Step 2 — shape the schedule.** Sidebar → _Schedule_. Set the _min/max
+**Step 2, shape the schedule.** Sidebar → _Schedule_. Set the _min/max
 commits per day_ (say 0–4) and save. Then sculpt the _distribution curve_:
 drag the handles, or pick a preset (Uniform, Bell, Left-skewed,
 Right-skewed). The histogram and the "you'll average ~X commits/day"
@@ -238,19 +237,19 @@ its start/end time; off days are dimmed. If a day's window is too short to
 fit the max commits at the configured gap, an amber banner names the days
 that will get auto-clamped.
 
-**Step 3 — pick a voice.** Sidebar → _Commit Style_. Write the prompt that
-Nova Lite follows for every commit — tone, voice, what kinds of edits feel
+**Step 3, pick a voice.** Sidebar → _Commit Style_. Write the prompt that
+Nova Lite follows for every commit: tone, voice, what kinds of edits feel
 right for this repo. Set the _destructive-commit probability_ (the chance
 any given commit removes code rather than adds it) and the _line range_ per
 commit.
 
-**Step 4 — settings.** Sidebar → _Settings_. Confirm your timezone (the
+**Step 4, settings.** Sidebar → _Settings_. Confirm your timezone (the
 orchestrator plans each day's window in local time), tune the
 between-commits gap, toggle light or dark theme, and rotate the dashboard
 password if you'd like.
 
 **The Dashboard page.** The home page surfaces the _Vacation Mode_ card
-(pause indefinitely or until a date you pick — the orchestrator exits
+(pause indefinitely or until a date you pick; the orchestrator exits
 cleanly while it's on), today's plan card with a relative-date label
 ("today" / "tomorrow"), status cards, the most recent run, and a recent
 activity feed. The _Test & preview_ card has two buttons: _Run a test
@@ -259,7 +258,7 @@ runs the orchestrator in dry-run mode. There's also a _Run scheduler now_
 button if you want the planner to re-plan today right away rather than
 waiting for the next 12:00 UTC tick.
 
-**The Logs page** shows every commit attempt — success or failure — with
+**The Logs page** shows every commit attempt, success or failure, with
 pagination via _Load more_.
 
 ## What it costs
@@ -269,17 +268,17 @@ us-east-1 list prices, the honest breakdown is:
 
 | Service               | What it's for                          | Typical monthly cost                                                               |
 | --------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
-| Bedrock — Nova Lite   | Commit content generation              | ~$0.0006 per commit (input + output combined); ~$0.05–$0.10/month at 5 commits/day |
-| Lambda                | Orchestrator + executor invocations    | ~$0 — well inside the Free Tier at this scale                                      |
-| DynamoDB (on-demand)  | Config + run/commit logs               | ~$0 — a few hundred small reads/writes a month                                     |
-| EventBridge Scheduler | Daily cron + one-time per-commit rules | ~$0 — well inside the free allowance                                               |
-| API Gateway           | Dashboard ↔ backend                    | ~$0 — only fires while the dashboard is open                                       |
+| Bedrock (Nova Lite)   | Commit content generation              | ~$0.0006 per commit (input + output combined); ~$0.05–$0.10/month at 5 commits/day |
+| Lambda                | Orchestrator + executor invocations    | ~$0, well inside the Free Tier at this scale                                       |
+| DynamoDB (on-demand)  | Config + run/commit logs               | ~$0, a few hundred small reads/writes a month                                      |
+| EventBridge Scheduler | Daily cron + one-time per-commit rules | ~$0, well inside the free allowance                                                |
+| API Gateway           | Dashboard ↔ backend                    | ~$0, only fires while the dashboard is open                                        |
 | Amplify Hosting       | Serving the dashboard                  | ~$0.15/GB-month stored + ~$0.01/GB served; the bundle is a few hundred KB          |
-| Secrets Manager       | Stores your GitHub token               | ~$0.40 flat per-secret fee — the largest single line item                          |
+| Secrets Manager       | Stores your GitHub token               | ~$0.40 flat per-secret fee; the largest single line item                           |
 | CloudWatch Logs       | Structured Lambda logs                 | ~$0–$0.05                                                                          |
 | **Total**             |                                        | **typically well under $1/month at ≤5 commits/day**                                |
 
-Heavier use — say 10 commits/day against large files — pushes the Bedrock
+Heavier use (say 10 commits/day against large files) pushes the Bedrock
 line a few cents higher; everything else stays effectively flat at
 single-user volume. Prices change and vary by region; check the
 [AWS Pricing Calculator](https://calculator.aws/) and your own bill, and
@@ -287,7 +286,7 @@ run `teardown.py` when you're done so nothing lingers.
 
 ## Redeploying after code changes
 
-The deploy command is idempotent — re-run the same one-liner:
+The deploy command is idempotent. Re-run the same one-liner:
 
 ```sh
 # Re-runs the full provisioning flow. Existing resources are reused;
@@ -313,10 +312,10 @@ and want the same secret name available, add `--force-secret-delete`.
 
 Other useful flags:
 
-- `--yes` — skip the final confirmation (the resource list is still
+- `--yes`: skip the final confirmation (the resource list is still
   printed).
-- `--keep-logs` — leave the CloudWatch log groups behind.
-- `--region us-west-2` — override the region from the state file.
+- `--keep-logs`: leave the CloudWatch log groups behind.
+- `--region us-west-2`: override the region from the state file.
 
 ## Customizing
 
@@ -326,14 +325,13 @@ content. The destructive-probability slider sets how often a commit removes
 code instead of adding it. The line-range card sets the minimum and maximum
 number of lines a single commit can touch.
 
-**The distribution curve (hero feature).** The curve on the _Schedule_
-page sets the probability of each possible per-day commit count, between
-your min and max. A bell curve clusters most days around the middle of the
-range; a left-skewed curve makes light days the norm with the occasional
-heavier one; a right-skewed curve does the opposite; uniform makes every
-count equally likely. Sculpting this — rather than picking a fixed
-"3 commits a day" — is what gives the agent a varied cadence to operate
-against instead of a rigid one.
+**The distribution curve.** The curve on the _Schedule_ page sets the
+probability of each possible per-day commit count, between your min and
+max. A bell curve clusters most days around the middle of the range; a
+left-skewed curve makes light days the norm with the occasional heavier
+one; a right-skewed curve does the opposite; uniform makes every count
+equally likely. Sculpting this, rather than picking a fixed "3 commits a
+day", is what gives the agent a varied cadence instead of a rigid one.
 
 **Per-day window.** Each weekday can be on or off and has its own
 start/end time. Off days are dimmed in the editor. The orchestrator only
@@ -355,7 +353,7 @@ future times, so you don't want to wait on the cron to confirm everything's
 wired up.
 
 **Easiest: the dashboard.** On the _Dashboard_ page, the _Test & preview_
-card has _Run a test commit now_ (fires the executor immediately — a real
+card has _Run a test commit now_ (fires the executor immediately; a real
 commit lands within seconds) and _Preview tonight's plan_ (runs the
 orchestrator in dry-run mode and shows the target day, sampled count, and
 planned local times, **without** creating any schedules or writing a run
@@ -414,8 +412,8 @@ follows the redirect, resolves the new `owner/repo`, and updates the
 stored value on the next read or run. The _Repository_ card will show the
 new name the next time it loads.
 
-**SSO token expired during a deploy.** Refresh and re-run — `deploy.py`
-is idempotent and picks up where it left off:
+**SSO token expired during a deploy.** Refresh and re-run. `deploy.py` is
+idempotent and picks up where it left off:
 
 ```sh
 aws sso login --profile my-sso-profile
@@ -431,12 +429,12 @@ aws logs tail /aws/lambda/groundskeeper-orchestrator --since 1h
 
 Common causes: Vacation Mode is on, today isn't an enabled weekday, or
 today's window has already fully passed (in which case the orchestrator
-plans for _tomorrow_ — the dashboard's "today's plan" card shows which
-date it's planning for).
+plans for _tomorrow_; the dashboard's "today's plan" card shows which date
+it's planning for).
 
 **A request returns "Permanently moved" or 301.** That's the GitHub
-redirect auto-heal path firing. It's expected and harmless; the request
-is automatically retried against the new location.
+redirect auto-heal path firing. It's expected and harmless; the request is
+automatically retried against the new location.
 
 ## How it works (architecture)
 
@@ -446,8 +444,8 @@ invocation, Secrets Manager, the distribution sampler, the time-slot
 planner, structured logging, typed errors, the Amplify password rotation
 helper, and the EventBridge Scheduler helper.
 
-The deeper version — single-table key design, every Lambda env var, full
-API Gateway routing table, every IAM policy — lives in
+The deeper version (single-table key design, every Lambda env var, full
+API Gateway routing table, every IAM policy) lives in
 [CONTRIBUTING.md](./CONTRIBUTING.md) alongside the development setup.
 
 ## Contributing
@@ -460,5 +458,5 @@ the PR checklist.
 
 ## License
 
-[MIT](./LICENSE) — short, permissive, no warranty. Do what you want; don't
+[MIT](./LICENSE). Short, permissive, no warranty. Do what you want; don't
 blame me.
