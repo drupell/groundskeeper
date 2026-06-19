@@ -1718,6 +1718,21 @@ def _ensure_oidc_provider(iam, account: str) -> tuple[str, bool]:
 
 
 def _ci_deploy_trust_policy(account: str, owner: str, repo: str, branch: str) -> dict:
+    """Trust policy for the GitHub-Actions OIDC deploy role.
+
+    GitHub's OIDC ``sub`` claim shape depends on whether the workflow job has
+    an ``environment`` set. Jobs without one send ``ref:refs/heads/<branch>``;
+    jobs with one (e.g. our prod-deploy job pinned to ``environment:
+    prod-deploy``) send ``environment:<name>`` instead. The role has to
+    trust both forms when we expect environment-gated deploys.
+
+    For the prod role (branch=main), accept both ref:refs/heads/main AND
+    environment:prod-deploy. For dev (branch=dev), just the ref form is
+    enough — dev.yml's deploy-dev job doesn't use an environment.
+    """
+    sub_patterns = [f"repo:{owner}/{repo}:ref:refs/heads/{branch}"]
+    if branch == "main":
+        sub_patterns.append(f"repo:{owner}/{repo}:environment:prod-deploy")
     return {
         "Version": "2012-10-17",
         "Statement": [
@@ -1730,7 +1745,7 @@ def _ci_deploy_trust_policy(account: str, owner: str, repo: str, branch: str) ->
                         f"{GITHUB_OIDC_HOST}:aud": GITHUB_OIDC_AUDIENCE,
                     },
                     "StringLike": {
-                        f"{GITHUB_OIDC_HOST}:sub": (f"repo:{owner}/{repo}:ref:refs/heads/{branch}"),
+                        f"{GITHUB_OIDC_HOST}:sub": sub_patterns,
                     },
                 },
             }
