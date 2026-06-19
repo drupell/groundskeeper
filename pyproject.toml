@@ -11,7 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "black>=24",
+    "black>=26.5.1",
     "ruff>=0.15.18",
     "pytest>=8",
 ]
