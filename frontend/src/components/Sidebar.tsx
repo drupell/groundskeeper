@@ -23,6 +23,17 @@ const NAV: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: <Settings size={18} /> },
 ]
 
+// Version is injected at build time from package.json via vite.config.ts's
+// `define`. Environment ("dev" / "prod") comes from VITE_ENVIRONMENT, which
+// deploy.py writes into frontend/.env.production. Showing the env label only
+// on dev keeps the prod footer clean.
+declare const __APP_VERSION__: string
+function footerLabel(): string {
+  const env = (import.meta.env.VITE_ENVIRONMENT as string | undefined)?.toLowerCase()
+  const version = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+  return env && env !== 'prod' ? `v${version} · ${env}` : `v${version}`
+}
+
 export function Sidebar() {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-elevated)]">
@@ -40,7 +51,7 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="flex items-center gap-2 border-t border-[var(--color-border)] px-4 py-3 text-xs text-[var(--color-fg-muted)]">
-        <span>v0.1 · dev preview</span>
+        <span>{footerLabel()}</span>
         <ThemeToggle />
       </div>
     </aside>

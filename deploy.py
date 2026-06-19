@@ -1162,18 +1162,7 @@ def ensure_api_gateway(
     )
 
     # ANY method on proxy → Lambda proxy integration
-    try:
-        apigw.put_method(
-            restApiId=api_id,
-            resourceId=proxy_id,
-            httpMethod="ANY",
-            authorizationType="NONE",
-            apiKeyRequired=False,
-            requestParameters={"method.request.path.proxy": True},
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConflictException":
-            raise
+    _ensure_any_method(apigw, api_id, proxy_id, with_proxy_param=True)
     apigw.put_integration(
         restApiId=api_id,
         resourceId=proxy_id,
@@ -1187,17 +1176,7 @@ def ensure_api_gateway(
     _put_cors_mock(apigw, api_id, proxy_id)
 
     # Same for root (so GET /foo and OPTIONS / work without /proxy+)
-    try:
-        apigw.put_method(
-            restApiId=api_id,
-            resourceId=root_id,
-            httpMethod="ANY",
-            authorizationType="NONE",
-            apiKeyRequired=False,
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConflictException":
-            raise
+    _ensure_any_method(apigw, api_id, root_id, with_proxy_param=False)
     apigw.put_integration(
         restApiId=api_id,
         resourceId=root_id,
@@ -1237,6 +1216,44 @@ def ensure_api_gateway(
 
 CORS_ALLOW_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
 CORS_ALLOW_HEADERS = "Content-Type,X-Api-Key,Authorization"
+
+
+def _ensure_any_method(apigw, api_id: str, resource_id: str, *, with_proxy_param: bool) -> None:
+    """Create the ANY method, or normalize it if it already exists.
+
+    Older deploys created methods with apiKeyRequired=True. Just catching
+    ConflictException and moving on leaves the old setting in place even
+    when this function thinks it's setting apiKeyRequired=False, because
+    put_method itself rejects the call (resource conflict) before any
+    field is updated. So when we hit the conflict we patch the existing
+    method to match what we'd have created.
+    """
+    request_params = {"method.request.path.proxy": True} if with_proxy_param else None
+    try:
+        apigw.put_method(
+            restApiId=api_id,
+            resourceId=resource_id,
+            httpMethod="ANY",
+            authorizationType="NONE",
+            apiKeyRequired=False,
+            requestParameters=request_params,
+        )
+        return
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConflictException":
+            raise
+
+    # Method already exists. Patch fields we care about so they match the
+    # desired state, regardless of what an older deploy left behind.
+    apigw.update_method(
+        restApiId=api_id,
+        resourceId=resource_id,
+        httpMethod="ANY",
+        patchOperations=[
+            {"op": "replace", "path": "/apiKeyRequired", "value": "false"},
+            {"op": "replace", "path": "/authorizationType", "value": "NONE"},
+        ],
+    )
 
 
 def _put_cors_mock(apigw, api_id: str, resource_id: str) -> None:
@@ -1452,7 +1469,7 @@ def prompt_dashboard_password(state: dict, non_interactive: bool = False) -> str
         return p1
 
 
-def build_frontend(api_url: str, region: str) -> Path | None:
+def build_frontend(api_url: str, region: str, environment: str) -> Path | None:
     if not (FRONTEND_DIR / "package.json").exists():
         warn("Frontend isn't here yet — skipping the build.")
         return None
@@ -1463,7 +1480,11 @@ def build_frontend(api_url: str, region: str) -> Path | None:
         return None
 
     env_file = FRONTEND_DIR / ".env.production"
-    env_file.write_text(f"VITE_API_URL={api_url}\nVITE_AWS_REGION={region}\n")
+    env_file.write_text(
+        f"VITE_API_URL={api_url}\n"
+        f"VITE_AWS_REGION={region}\n"
+        f"VITE_ENVIRONMENT={environment}\n"
+    )
     step("Wrote frontend/.env.production")
 
     with Progress(
@@ -2041,7 +2062,7 @@ def main() -> None:
     dashboard_url = None
     if not args.skip_frontend:
         password = prompt_dashboard_password(state, non_interactive=args.non_interactive)
-        dist = build_frontend(api_url, region)
+        dist = build_frontend(api_url, region, environment)
         dashboard_url = ensure_amplify(clients, region, environment, state, dist, password)
         # Now that the Amplify app id is known, tighten amplify:UpdateApp from
         # apps/* down to this single app's ARN.
