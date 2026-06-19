@@ -94,7 +94,7 @@ function TimezoneCard({ timezone }: { timezone: string }) {
     setValue(timezone)
   }, [timezone])
 
-  const zones = useMemo(listTimezones, [])
+  const zones = useMemo(() => listTimezones(), [])
   const dirty = value !== timezone
   const valid = zones.includes(value) || zones.length === 0
 
