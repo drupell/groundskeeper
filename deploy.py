@@ -1215,7 +1215,7 @@ def ensure_api_gateway(
 
 
 CORS_ALLOW_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-CORS_ALLOW_HEADERS = "Content-Type,X-Api-Key,Authorization"
+CORS_ALLOW_HEADERS = "Content-Type,Authorization"
 
 
 def _ensure_any_method(apigw, api_id: str, resource_id: str, *, with_proxy_param: bool) -> None:
