@@ -25,21 +25,21 @@ export function SchedulePage() {
   return (
     <div className="px-8 py-10">
       <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">Schedule</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Set how many commits land per day, shape their distribution, and pick the active window
-          for each weekday.
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">Schedule</h1>
+        <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          Decide how many commits land each day, shape the distribution, and choose when each
+          weekday is in play.
         </p>
       </header>
 
       {error && (
-        <div className="mb-6 rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+        <div className="mb-6 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
           {error}
         </div>
       )}
 
       {loading || !config ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-[var(--color-fg-muted)]">One moment…</div>
       ) : (
         <div className="max-w-2xl space-y-6">
           <RangeCard config={config} />
@@ -63,16 +63,31 @@ const COUNT_CAP = 20
 
 function RangeCard({ config }: { config: Config }) {
   const { updateConfig } = useConfig()
-  const [minText, setMinText] = useState(String(config.commit_count.min))
-  const [maxText, setMaxText] = useState(String(config.commit_count.max))
+  // Reset-on-change during render: when the saved config.commit_count changes
+  // upstream, we discard local edits and re-seed from the new values. The
+  // "key" fields track which saved snapshot the local text reflects.
+  const [textState, setTextState] = useState({
+    key: { min: config.commit_count.min, max: config.commit_count.max },
+    min: String(config.commit_count.min),
+    max: String(config.commit_count.max),
+  })
+  if (
+    textState.key.min !== config.commit_count.min ||
+    textState.key.max !== config.commit_count.max
+  ) {
+    setTextState({
+      key: { min: config.commit_count.min, max: config.commit_count.max },
+      min: String(config.commit_count.min),
+      max: String(config.commit_count.max),
+    })
+  }
+  const minText = textState.min
+  const maxText = textState.max
+  const setMinText = (v: string) => setTextState((prev) => ({ ...prev, min: v }))
+  const setMaxText = (v: string) => setTextState((prev) => ({ ...prev, max: v }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setMinText(String(config.commit_count.min))
-    setMaxText(String(config.commit_count.max))
-  }, [config.commit_count.min, config.commit_count.max])
 
   // Clamp only when computing what we'd save: min ≥ 0, max ≥ min, both ≤ cap.
   const cMin = Math.min(COUNT_CAP, Math.max(0, parseInt(minText, 10) || 0))
@@ -90,7 +105,7 @@ function RangeCard({ config }: { config: Config }) {
       setMaxText(String(cMax))
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -102,21 +117,21 @@ function RangeCard({ config }: { config: Config }) {
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
       <CardSubtitle>
-        The sampler draws an integer in this range each active day. Saving a new range re-points the
-        distribution below.
+        Each active day, we pick a whole number in this range. Saving a new range resets the
+        distribution below to match.
       </CardSubtitle>
       <div className="grid grid-cols-2 gap-4">
         <NumberInput label="Minimum" value={minText} onChange={setMinText} placeholder="0" />
         <NumberInput label="Maximum" value={maxText} onChange={setMaxText} placeholder="4" />
       </div>
       {willClamp && (
-        <p className="mt-3 text-xs text-slate-500">
-          Saves as <span className="text-slate-300 tabular-nums">{cMin}</span>–
-          <span className="text-slate-300 tabular-nums">{cMax}</span> (clamped: min ≥ 0, max ≥ min,
-          ≤ {COUNT_CAP}).
+        <p className="mt-3 text-xs text-[var(--color-fg-muted)]">
+          We'll save this as <span className="text-[var(--color-fg)] tabular-nums">{cMin}</span>–
+          <span className="text-[var(--color-fg)] tabular-nums">{cMax}</span> (min ≥ 0, max ≥ min,
+          both ≤ {COUNT_CAP}).
         </p>
       )}
-      {err && <p className="mt-3 text-xs text-red-300">{err}</p>}
+      {err && <p className="mt-3 text-xs text-rose-300">{err}</p>}
       <div className="mt-4 flex justify-end gap-2">
         {dirty && (
           <button
@@ -126,7 +141,7 @@ function RangeCard({ config }: { config: Config }) {
               setMaxText(String(config.commit_count.max))
             }}
             disabled={saving}
-            className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-500"
+            className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)] disabled:cursor-not-allowed disabled:text-[var(--color-fg-dim)]"
           >
             Discard
           </button>
@@ -135,7 +150,7 @@ function RangeCard({ config }: { config: Config }) {
           type="button"
           onClick={save}
           disabled={!dirty || saving}
-          className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-1.5 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {saving && <Loader size={12} className="animate-spin" />}
           Save
@@ -161,14 +176,29 @@ function DistributionEditorWrapper({ config }: { config: Config }) {
 
 function WeeklyWindowCard({ config }: { config: Config }) {
   const { updateConfig } = useConfig()
-  const [days, setDays] = useState<Record<string, DayConfig>>(() => clone(config.schedule))
+  // Reset-on-change during render: when the saved schedule changes upstream
+  // (identity comparison — useConfig hands back a new object each save) we
+  // discard local edits and re-seed from the new snapshot.
+  const [daysState, setDaysState] = useState<{
+    key: Record<string, DayConfig>
+    days: Record<string, DayConfig>
+  }>(() => ({ key: config.schedule, days: clone(config.schedule) }))
+  if (daysState.key !== config.schedule) {
+    setDaysState({ key: config.schedule, days: clone(config.schedule) })
+  }
+  const days = daysState.days
+  const setDays = (
+    next:
+      | Record<string, DayConfig>
+      | ((prev: Record<string, DayConfig>) => Record<string, DayConfig>),
+  ) =>
+    setDaysState((prev) => ({
+      ...prev,
+      days: typeof next === 'function' ? next(prev.days) : next,
+    }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setDays(clone(config.schedule))
-  }, [config.schedule])
 
   const dirty = JSON.stringify(days) !== JSON.stringify(config.schedule)
   const invalidDays = DAYS.filter((d) => {
@@ -191,7 +221,7 @@ function WeeklyWindowCard({ config }: { config: Config }) {
       await updateConfig({ schedule: days })
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save the schedule — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -203,7 +233,7 @@ function WeeklyWindowCard({ config }: { config: Config }) {
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
       <CardSubtitle>
-        Commits are spread randomly inside each enabled day's window. Off days are dimmed.
+        Commits land at random times inside each active day's window. Days that are off are dimmed.
       </CardSubtitle>
 
       {tight.length > 0 && (
@@ -211,10 +241,10 @@ function WeeklyWindowCard({ config }: { config: Config }) {
           <TriangleAlert size={16} className="mt-0.5 shrink-0" />
           <div>
             With up to <strong>{config.commit_count.max}</strong> commits and a{' '}
-            <strong>{config.gap.min_minutes}-min</strong> minimum gap, you need at least{' '}
+            <strong>{config.gap.min_minutes}-min</strong> minimum gap, you'd need at least{' '}
             <strong>{formatMinutes((config.commit_count.max - 1) * config.gap.min_minutes)}</strong>
-            . That doesn't fit {tight.map((d) => titleCase(d)).join(', ')}. Those days will be{' '}
-            <strong>clamped</strong> to fewer commits automatically.
+            . That won't fit on {tight.map((d) => titleCase(d)).join(', ')} — those days will be{' '}
+            <strong>trimmed</strong> to fewer commits automatically.
           </div>
         </div>
       )}
@@ -229,7 +259,9 @@ function WeeklyWindowCard({ config }: { config: Config }) {
               key={day}
               className={cn(
                 'flex items-center gap-4 rounded-lg border px-4 py-2.5 transition-opacity',
-                c.enabled ? 'border-slate-800 bg-slate-900/50' : 'border-slate-900 opacity-50',
+                c.enabled
+                  ? 'border-[var(--color-border)] bg-[var(--color-surface-sunk)]'
+                  : 'border-[var(--color-border)] opacity-50',
               )}
             >
               <Switch
@@ -237,7 +269,9 @@ function WeeklyWindowCard({ config }: { config: Config }) {
                 onChange={(v) => patch(day, { enabled: v })}
                 ariaLabel={`Toggle ${day}`}
               />
-              <span className="w-24 text-sm font-medium text-slate-200 capitalize">{day}</span>
+              <span className="w-24 text-sm font-medium text-[var(--color-fg)] capitalize">
+                {day}
+              </span>
               <div className="ml-auto flex items-center gap-2">
                 <TimeField
                   value={c.start}
@@ -245,7 +279,7 @@ function WeeklyWindowCard({ config }: { config: Config }) {
                   disabled={!c.enabled}
                   invalid={badWindow}
                 />
-                <span className="text-slate-600">–</span>
+                <span className="text-[var(--color-fg-dim)]">–</span>
                 <TimeField
                   value={c.end}
                   onChange={(v) => patch(day, { end: v })}
@@ -259,11 +293,11 @@ function WeeklyWindowCard({ config }: { config: Config }) {
       </div>
 
       {!valid && (
-        <p className="mt-3 text-xs text-amber-300">
-          {invalidDays.map(titleCase).join(', ')}: end time must be after start time.
+        <p className="mt-3 text-xs text-[var(--color-brand)]">
+          {invalidDays.map(titleCase).join(', ')}: the end time needs to be after the start.
         </p>
       )}
-      {err && <p className="mt-3 text-xs text-red-300">{err}</p>}
+      {err && <p className="mt-3 text-xs text-rose-300">{err}</p>}
 
       <div className="mt-4 flex justify-end gap-2">
         {dirty && (
@@ -271,7 +305,7 @@ function WeeklyWindowCard({ config }: { config: Config }) {
             type="button"
             onClick={() => setDays(clone(config.schedule))}
             disabled={saving}
-            className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-500"
+            className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)] disabled:cursor-not-allowed disabled:text-[var(--color-fg-dim)]"
           >
             Discard
           </button>
@@ -280,7 +314,7 @@ function WeeklyWindowCard({ config }: { config: Config }) {
           type="button"
           onClick={save}
           disabled={!dirty || !valid || saving}
-          className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-1.5 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {saving && <Loader size={12} className="animate-spin" />}
           Save schedule
@@ -312,10 +346,10 @@ function TimeField({
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       className={cn(
-        'rounded-md border bg-slate-900 px-2.5 py-1.5 font-mono text-sm text-slate-100 tabular-nums [color-scheme:dark] focus:ring-1 focus:outline-none',
+        'rounded-md border bg-[var(--color-surface-sunk)] px-2.5 py-1.5 font-mono text-sm text-[var(--color-fg)] tabular-nums focus:ring-1 focus:outline-none',
         invalid
-          ? 'border-amber-700 focus:border-amber-600 focus:ring-amber-700'
-          : 'border-slate-800 focus:border-sky-700 focus:ring-sky-700',
+          ? 'border-[var(--color-brand)] focus:border-[var(--color-brand-hover)] focus:ring-[var(--color-brand)]'
+          : 'border-[var(--color-border)] focus:border-[var(--color-brand)] focus:ring-[var(--color-brand)]',
         disabled && 'cursor-not-allowed opacity-50',
       )}
     />
@@ -331,15 +365,26 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Timer-driven "Saved" indicator — responds to savedAt changing rather than
+  // recomputing freshness from Date.now() in render (which would be impure).
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- responding to an external event (savedAt timestamp change), not deriving state from props
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
         <Loader size={12} className="animate-spin" /> Saving…
       </span>
     )
   }
-  if (dirty) return <span className="text-xs text-amber-300">Unsaved</span>
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (dirty) return <span className="text-xs text-[var(--color-brand)]">Unsaved</span>
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

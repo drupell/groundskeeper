@@ -42,8 +42,8 @@ def _resolve_author(identity: dict) -> tuple[str, str]:
         email = github.noreply_email(uid, identity.get("login"))
     if not name or not email:
         raise GroundskeeperError(
-            "No GitHub-attributable author identity stored. Reconnect your PAT "
-            "on the GitHub page so commits count toward your graph.",
+            "We don't have a GitHub-attributable author on file. Reconnect your "
+            "token on the GitHub page so commits count toward your graph.",
             code="no_author_identity",
         )
     return name, email
@@ -51,7 +51,15 @@ def _resolve_author(identity: dict) -> tuple[str, str]:
 
 USER_ID = "default"
 
-_MAX_FILE_BYTES = 200 * 1024
+# Cap candidate files well below Bedrock's 4096-token output budget. At Nova's
+# rough ~3:1 char-per-token ratio, 12 KB of source fits with room to spare so
+# the model can return the full file without hitting max_tokens and silently
+# truncating the commit.
+_MAX_FILE_BYTES = 12 * 1024
+# How many different files to try if the first picks 404 from the contents API
+# (rare quirky paths) or come back unchanged from Bedrock. Each retry simply
+# picks a fresh candidate from the same listing.
+_MAX_FILE_ATTEMPTS = 5
 
 
 _CREATIVE_MESSAGES: tuple[str, ...] = (
@@ -76,8 +84,8 @@ def handler(event: dict, context: Any) -> dict:
         return _run(event)
     except GroundskeeperError as exc:
         log.warn("executor.skipped", code=exc.code, message=str(exc))
-        _record_failure(event, code=exc.code, message=str(exc))
-        return {"status": "skipped", "reason": exc.code}
+        logged = _record_failure(event, code=exc.code, message=str(exc))
+        return {"status": "skipped", "reason": exc.code, "logged": logged}
     except Exception as exc:
         log.exception("executor.failure", exc)
         _record_failure(event, code="unhandled", message=str(exc))
@@ -91,11 +99,25 @@ def _run(event: dict) -> dict:
     cfg = config.load_config(USER_ID)
     repo_cfg = cfg.get("repo")
     if not repo_cfg:
-        raise GroundskeeperError("No repo configured.", code="no_repo")
+        raise GroundskeeperError(
+            "No repository connected yet — add one on the GitHub page.",
+            code="no_repo",
+        )
 
     token = secrets.get_pat()
     if not token:
-        raise GroundskeeperError("No PAT stored.", code="no_pat")
+        raise GroundskeeperError(
+            "No GitHub token saved yet — connect one on the GitHub page first.",
+            code="no_pat",
+        )
+
+    # Re-anchor on GitHub's stable numeric repo id every run so a rename or
+    # ownership transfer heals through silently instead of failing the PUT
+    # later with "Moved Permanently".
+    repo_cfg, _changed = github.resolve_current(token, repo_cfg)
+    if _changed:
+        log.info("executor.repo_reconciled", to_full=repo_cfg.get("full_name"))
+        config.merge_patch({"repo": repo_cfg}, USER_ID)
 
     identity = ddb.get_item(ddb.user_pk(USER_ID), ddb.SK_GITHUB) or {}
     author_name, author_email = _resolve_author(identity)
@@ -107,55 +129,111 @@ def _run(event: dict) -> dict:
     tree = github.list_tree(token, owner, repo_name, branch)
     candidates = _filter_files(tree)
     if not candidates:
-        raise GroundskeeperError("No eligible files in the repo.", code="no_files")
-    chosen = random.choice(candidates)
-    path: str = chosen["path"]
-    log.info("executor.file_chosen", path=path, size=int(chosen.get("size") or 0))
+        raise GroundskeeperError(
+            "Couldn't find an eligible file to edit in this repo.",
+            code="no_files",
+        )
 
-    file_obj = github.get_file(token, owner, repo_name, path, branch)
-    current_content = github.decode_file(file_obj)
+    # Pick a file, fetch it, ask the model to edit it. Some failures are
+    # *file-specific* — a 404 from the contents API (unusual paths, races), or
+    # Bedrock returning the file unchanged — and shouldn't burn a scheduled
+    # slot. Retry with a different file (without replacement) a few times.
+    remaining = list(candidates)
+    last_err: GroundskeeperError | None = None
+    for attempt in range(_MAX_FILE_ATTEMPTS):
+        if not remaining:
+            break
+        chosen = random.choice(remaining)
+        remaining.remove(chosen)
+        path: str = chosen["path"]
+        log.info(
+            "executor.file_chosen",
+            path=path,
+            attempt=attempt + 1,
+            size=int(chosen.get("size") or 0),
+        )
 
-    commit_type = _choose_commit_type(cfg, current_content)
-    new_content = _edit(commit_type, path, current_content, cfg["commit_style"])
+        try:
+            file_obj = github.get_file(token, owner, repo_name, path, branch)
+        except UpstreamError as e:
+            if e.code == "github_not_found":
+                last_err = e
+                log.info("executor.retry", reason="github_not_found", path=path)
+                continue
+            raise
 
-    if new_content == current_content:
-        raise GroundskeeperError("Bedrock returned no change.", code="no_change")
+        current_content = github.decode_file(file_obj)
+        if current_content is None:
+            last_err = GroundskeeperError(
+                "Couldn't decode the file as UTF-8 — retrying with a different file.",
+                code="decode_failed",
+            )
+            log.info("executor.retry", reason="decode_failed", path=path)
+            continue
 
-    message = _build_commit_message(commit_type, path)
-    result = github.put_file(
-        token,
-        owner,
-        repo_name,
-        path,
-        branch,
-        content=new_content,
-        sha=file_obj.get("sha"),
-        message=message,
-        author_name=author_name,
-        author_email=author_email,
+        commit_type = _choose_commit_type(cfg, current_content)
+        try:
+            new_content = _edit(commit_type, path, current_content, cfg["commit_style"])
+        except UpstreamError as e:
+            if e.code == "bedrock_truncated":
+                last_err = e
+                log.info("executor.retry", reason="bedrock_truncated", path=path)
+                continue
+            raise
+
+        if new_content == current_content:
+            last_err = GroundskeeperError(
+                "Bedrock returned the file unchanged — retrying with a different file.",
+                code="no_change",
+            )
+            log.info("executor.retry", reason="no_change", path=path)
+            continue
+
+        message = _build_commit_message(commit_type, path)
+        result = github.put_file(
+            token,
+            owner,
+            repo_name,
+            path,
+            branch,
+            content=new_content,
+            sha=file_obj.get("sha"),
+            message=message,
+            author_name=author_name,
+            author_email=author_email,
+        )
+        commit_meta = result.get("commit") or {}
+
+        _record_success(
+            event=event,
+            commit_type=commit_type,
+            path=path,
+            message=message,
+            commit_meta=commit_meta,
+        )
+        log.info(
+            "executor.committed",
+            path=path,
+            sha=commit_meta.get("sha"),
+            type=commit_type,
+            attempt=attempt + 1,
+        )
+        return {
+            "status": "committed",
+            "type": commit_type,
+            "path": path,
+            "sha": commit_meta.get("sha"),
+            "commit_url": commit_meta.get("html_url"),
+        }
+
+    # All attempts retriable-failed; surface the last reason so it logs as a
+    # real failure rather than an unhandled crash.
+    if last_err is not None:
+        raise last_err
+    raise GroundskeeperError(
+        "Ran out of eligible files to try after a few attempts.",
+        code="no_files",
     )
-    commit_meta = result.get("commit") or {}
-
-    _record_success(
-        event=event,
-        commit_type=commit_type,
-        path=path,
-        message=message,
-        commit_meta=commit_meta,
-    )
-    log.info(
-        "executor.committed",
-        path=path,
-        sha=commit_meta.get("sha"),
-        type=commit_type,
-    )
-    return {
-        "status": "committed",
-        "type": commit_type,
-        "path": path,
-        "sha": commit_meta.get("sha"),
-        "commit_url": commit_meta.get("html_url"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +296,7 @@ def _edit(commit_type: str, path: str, content: str, style: dict) -> str:
         temperature=temperature,
     )
     if not reply.strip():
-        raise UpstreamError("Bedrock returned an empty response.", code="bedrock_empty")
+        raise UpstreamError("Bedrock came back with an empty response.", code="bedrock_empty")
     # generate_edit already strips one optional code fence — guard against the
     # rare case where the model wraps in two layers of fences.
     return reply.rstrip("\n") + "\n"
@@ -260,7 +338,7 @@ def _record_success(
     )
 
 
-def _record_failure(event: dict, *, code: str, message: str) -> None:
+def _record_failure(event: dict, *, code: str, message: str) -> bool:
     now = datetime.now(UTC)
     try:
         ddb.put_item(
@@ -276,5 +354,15 @@ def _record_failure(event: dict, *, code: str, message: str) -> None:
                 "logged_at": now.isoformat(),
             },
         )
+        return True
     except Exception as exc:
-        log.warn("executor.log_failure_swallowed", error=str(exc))
+        # Surface — not swallow — the DDB failure so an outage doesn't leave
+        # the original skip silently unrecorded.
+        log.exception(
+            "executor.log_failure_write_error",
+            exc,
+            original_code=code,
+            original_message=message[:500],
+            error=str(exc),
+        )
+        return False

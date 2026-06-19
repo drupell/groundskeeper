@@ -1,6 +1,7 @@
-// API client. Singleton instantiated from build-time env vars written by
+// API client. Singleton instantiated from a build-time env var written by
 // deploy.py into frontend/.env.production. The whole dashboard sits behind
-// Amplify basic auth, so the API key in the JS bundle is acceptable.
+// Amplify basic auth, which is the single gate on every endpoint — no
+// per-request API key on top.
 
 export interface ApiError {
   error: string
@@ -35,7 +36,8 @@ export interface RepoConfig {
   default_branch: string
   description?: string | null
   private: boolean
-  repo_id: string
+  /** GitHub's stable numeric repo id. Used to detect renames + auto-heal. */
+  id?: number
 }
 
 export interface Config {
@@ -116,36 +118,68 @@ export interface DryRunResult {
   note?: string
 }
 
+export type ApiClientErrorKind = 'network' | 'http' | 'parse'
+
+export class ApiClientError extends Error {
+  readonly kind: ApiClientErrorKind
+  readonly status?: number
+
+  constructor(kind: ApiClientErrorKind, message: string, status?: number) {
+    super(message)
+    this.name = 'ApiClientError'
+    this.kind = kind
+    this.status = status
+  }
+}
+
 class ApiClient {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey: string,
-  ) {}
+  constructor(private readonly baseUrl: string) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' }
-    if (this.apiKey) headers['x-api-key'] = this.apiKey
     if (body !== undefined) headers['Content-Type'] = 'application/json'
 
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
+    let res: Response
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+    } catch (e) {
+      // fetch only throws on network failure (DNS, offline, CORS preflight, etc.)
+      throw new ApiClientError(
+        'network',
+        e instanceof Error && e.message ? e.message : 'Network request failed',
+      )
+    }
 
     if (res.status === 204) return undefined as T
 
     const raw = await res.text()
     let parsed: unknown
-    try {
-      parsed = raw ? JSON.parse(raw) : null
-    } catch {
-      parsed = { message: raw || res.statusText }
+    let parseFailed = false
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        parsed = { message: raw || res.statusText }
+        parseFailed = true
+      }
+    } else {
+      parsed = null
     }
 
     if (!res.ok) {
       const err = parsed as Partial<ApiError> | null
-      throw new Error(err?.message || `Request failed (${res.status})`)
+      throw new ApiClientError(
+        'http',
+        err?.message || `Couldn't reach the API (${res.status}) — try again in a moment.`,
+        res.status,
+      )
+    }
+    if (parseFailed) {
+      throw new ApiClientError('parse', 'The API returned a response we couldn’t read.')
     }
     return parsed as T
   }
@@ -182,12 +216,14 @@ class ApiClient {
   // Testing
   testRun = () => this.request<{ status: string; message: string }>('POST', '/test/run')
   testPlan = () => this.request<DryRunResult>('POST', '/test/plan')
+
+  // Manual orchestrator run (not dry-run — creates real schedules + RUN#)
+  runNow = () => this.request<{ status: string; message: string }>('POST', '/run/now')
 }
 
 const baseUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
-const apiKey = (import.meta.env.VITE_API_KEY as string | undefined) ?? ''
 
-export const apiClient = new ApiClient(baseUrl, apiKey)
+export const apiClient = new ApiClient(baseUrl)
 
 /** Kept for backwards-compat with any callers still importing `useApi`. */
 export function useApi() {

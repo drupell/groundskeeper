@@ -7,13 +7,46 @@ configured timezone) and asks for ``n`` timestamps inside it with gaps in
 fits and report how many we actually placed.
 """
 
+import logging
 import random
-from datetime import datetime, time, timedelta, tzinfo
+from datetime import datetime, time, timedelta, timezone, tzinfo
+
+logger = logging.getLogger(__name__)
 
 
 def _at(local_date: datetime, hhmm: str, tz: tzinfo) -> datetime:
+    """Build a tz-aware datetime at ``HH:MM`` local time on ``local_date``.
+
+    DST handling: on a spring-forward day the requested wall-clock time may
+    not exist (e.g. 02:30 America/New_York on the second Sunday of March).
+    Python's ``zoneinfo`` still returns a usable aware datetime, but its UTC
+    instant corresponds to a wall-clock minute that differs from what was
+    asked. We detect that by round-tripping through UTC and, if the local
+    wall-clock doesn't match, shift forward to the next existing local time
+    at or after the requested HH:MM. Fall-back (ambiguous) times use the
+    default ``fold=0`` — the earlier of the two instants — which is the
+    intuitive "first occurrence" choice.
+    """
     h, m = (int(x) for x in hhmm.split(":"))
-    return datetime.combine(local_date.date(), time(h, m), tzinfo=tz)
+    naive = datetime.combine(local_date.date(), time(h, m))
+    dt = naive.replace(tzinfo=tz)
+    # Round-trip through UTC to detect a spring-forward gap: when the
+    # requested wall-clock doesn't exist, the round-trip lands on a
+    # different (post-transition) wall-clock. zoneinfo's round-tripped
+    # value IS the natural "shifted forward" answer, so return it.
+    round_tripped = dt.astimezone(timezone.utc).astimezone(tz)
+    if (round_tripped.hour, round_tripped.minute) != (h, m):
+        logger.warning(
+            "dst_transition_adjustment: requested %s on %s in %s does not exist; "
+            "using %02d:%02d instead",
+            hhmm,
+            local_date.date().isoformat(),
+            tz,
+            round_tripped.hour,
+            round_tripped.minute,
+        )
+        return round_tripped
+    return dt
 
 
 def plan_times(

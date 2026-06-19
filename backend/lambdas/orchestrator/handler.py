@@ -1,6 +1,6 @@
 """Groundskeeper — Nightly Orchestrator Lambda.
 
-Daily flow (triggered by EventBridge ``cron(5 0 * * ? *)`` in UTC):
+Daily flow (triggered by EventBridge ``cron(0 12 * * ? *)`` in UTC):
 
   1. Load the user config from DynamoDB.
   2. Honor vacation mode (skip cleanly if active).
@@ -27,8 +27,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import boto3
 from botocore.exceptions import ClientError
-from shared import config, ddb, log, secrets, timeplan
+from shared import config, ddb, github, log, secrets, timeplan
 from shared.distribution import sample_count
+from shared.errors import GroundskeeperError
+from shared.scheduler import parse_schedule_date
 
 USER_ID = "default"
 SCHEDULE_GROUP = "default"
@@ -72,12 +74,36 @@ def handler(event: dict, context: Any) -> dict:
         log.warn("orchestrator.skip", reason="no_repo")
         return {"status": "skipped", "reason": "no_repo", "dry_run": dry_run}
 
-    if not secrets.has_pat():
+    token = secrets.get_pat()
+    if not token:
         log.warn("orchestrator.skip", reason="no_pat")
         return {"status": "skipped", "reason": "no_pat", "dry_run": dry_run}
 
+    # Re-anchor the stored repo on GitHub's stable numeric id. Heals through
+    # renames or ownership transfers silently so today's commits don't fire
+    # against a stale owner/name pair. If GitHub is unreachable or the token
+    # was revoked, skip cleanly rather than crash the daily cron.
+    try:
+        canonical, changed = github.resolve_current(token, cfg["repo"])
+        if changed:
+            log.info(
+                "orchestrator.repo_reconciled",
+                from_full=cfg["repo"].get("full_name"),
+                to_full=canonical.get("full_name"),
+            )
+            config.merge_patch({"repo": canonical}, USER_ID)
+            cfg["repo"] = canonical
+    except GroundskeeperError as exc:
+        log.warn(
+            "orchestrator.skip",
+            reason="repo_resolve_failed",
+            code=exc.code,
+            message=str(exc),
+        )
+        return {"status": "skipped", "reason": "repo_resolve_failed", "dry_run": dry_run}
+
     if not dry_run:
-        deleted = _cleanup_orphans()
+        deleted = _cleanup_orphans(now_local.date())
         if deleted:
             log.info("orchestrator.cleanup", deleted=deleted)
 
@@ -145,7 +171,7 @@ def handler(event: dict, context: Any) -> dict:
     times_utc_iso: list[str] = []
     for idx, t_local in enumerate(times_local):
         t_utc = t_local.astimezone(UTC)
-        name = f"{SCHEDULE_PREFIX}-{target_date.isoformat()}-" f"{idx:02d}-{uuid.uuid4().hex[:6]}"
+        name = f"{SCHEDULE_PREFIX}-{target_date.isoformat()}-{idx:02d}-{uuid.uuid4().hex[:6]}"
         _create_schedule(
             name=name,
             at_utc=t_utc,
@@ -213,7 +239,10 @@ def _resolve_target_day(
     now_local: datetime,
 ) -> tuple[date | None, dict | None]:
     """Pick today's local date if its window end is still ahead, else tomorrow."""
-    for offset in range(2):
+    # Scan a full week so a run that lands on consecutive disabled days (e.g.
+    # Sat morning with both weekend days off) still finds Monday's window
+    # rather than skipping with no_active_day_in_window.
+    for offset in range(7):
         candidate = (now_local + timedelta(days=offset)).date()
         day_cfg = schedule_cfg.get(_DAYS[candidate.weekday()]) or {}
         if not day_cfg.get("enabled"):
@@ -230,13 +259,20 @@ def _resolve_target_day(
     return None, None
 
 
-def _cleanup_orphans() -> int:
+def _cleanup_orphans(today_local: date) -> int:
     """Delete any lingering one-time commit schedules under our prefix.
 
     With ``ActionAfterCompletion=DELETE`` set on every schedule we create, the
     happy path leaves nothing behind. This sweep handles failed/aborted
     executions and re-runs.
+
+    Schedules whose embedded local date is today or later are still pending —
+    e.g. a prior 'Run scheduler now' that already planned today's commits, or
+    a late-window timezone where the daily UTC cron fires mid-day. Leave those
+    alone; only purge stale-dated (yesterday or earlier) entries. Unrecognized
+    names fall through to deletion to clear out any unrelated noise.
     """
+    today_iso = today_local.isoformat()
     deleted = 0
     next_token: str | None = None
     while True:
@@ -249,9 +285,13 @@ def _cleanup_orphans() -> int:
             kwargs["NextToken"] = next_token
         resp = _scheduler.list_schedules(**kwargs)
         for schedule in resp.get("Schedules", []):
+            name = schedule["Name"]
+            embedded = parse_schedule_date(name)
+            if embedded is not None and embedded >= today_iso:
+                continue
             try:
                 _scheduler.delete_schedule(
-                    Name=schedule["Name"],
+                    Name=name,
                     GroupName=SCHEDULE_GROUP,
                 )
                 deleted += 1
@@ -259,7 +299,7 @@ def _cleanup_orphans() -> int:
                 if exc.response["Error"].get("Code") != "ResourceNotFoundException":
                     log.warn(
                         "orchestrator.cleanup_failed",
-                        name=schedule["Name"],
+                        name=name,
                         error=str(exc),
                     )
         next_token = resp.get("NextToken")
@@ -276,7 +316,7 @@ def _create_schedule(
     commit_index: int,
 ) -> None:
     if not EXECUTOR_ARN or not SCHEDULER_ROLE_ARN:
-        raise RuntimeError("EXECUTOR_ARN and SCHEDULER_ROLE_ARN env vars must be set.")
+        raise RuntimeError("EXECUTOR_ARN and SCHEDULER_ROLE_ARN env vars need to be set.")
     expression = f"at({at_utc.strftime('%Y-%m-%dT%H:%M:%S')})"
     payload = {
         "schedule_name": name,

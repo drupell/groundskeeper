@@ -19,20 +19,20 @@ export function SettingsPage() {
   return (
     <div className="px-8 py-10">
       <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">Settings</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Timezone, commit gap, and the dashboard's basic-auth password.
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">Settings</h1>
+        <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          Timezone, the gap between commits, and the password you use to sign in here.
         </p>
       </header>
 
       {error && (
-        <div className="mb-6 rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+        <div className="mb-6 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
           {error}
         </div>
       )}
 
       {loading || !config ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-[var(--color-fg-muted)]">One moment…</div>
       ) : (
         <div className="max-w-2xl space-y-6">
           <TimezoneCard timezone={config.timezone} />
@@ -85,16 +85,20 @@ function listTimezones(): string[] {
 
 function TimezoneCard({ timezone }: { timezone: string }) {
   const { updateConfig } = useConfig()
-  const [value, setValue] = useState(timezone)
+  // Pattern A3: track the prop we last reset against so a changing `timezone`
+  // resets the editor during render instead of via a sync useEffect.
+  const [valueState, setValueState] = useState({ key: timezone, value: timezone })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => {
-    setValue(timezone)
-  }, [timezone])
+  if (valueState.key !== timezone) {
+    setValueState({ key: timezone, value: timezone })
+  }
+  const value = valueState.key === timezone ? valueState.value : timezone
+  const setValue = (next: string) => setValueState({ key: timezone, value: next })
 
-  const zones = useMemo(listTimezones, [])
+  const zones = useMemo(() => listTimezones(), [])
   const dirty = value !== timezone
   const valid = zones.includes(value) || zones.length === 0
 
@@ -106,7 +110,7 @@ function TimezoneCard({ timezone }: { timezone: string }) {
       await updateConfig({ timezone: value })
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -131,14 +135,12 @@ function TimezoneCard({ timezone }: { timezone: string }) {
       <CardHeader title="Timezone" icon={<Clock size={18} />}>
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
-      <CardSubtitle>
-        The orchestrator uses this when planning today's commit window in local time.
-      </CardSubtitle>
+      <CardSubtitle>We use this to plan today's commit window in your local time.</CardSubtitle>
       <div className="relative">
         <select
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          className="w-full appearance-none rounded-md border border-slate-800 bg-slate-900 px-3 py-2 pr-9 text-sm text-slate-100 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+          className="w-full appearance-none rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 pr-9 text-sm text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
         >
           {!zones.includes(value) && <option value={value}>{value}</option>}
           {zones.map((z) => (
@@ -147,23 +149,24 @@ function TimezoneCard({ timezone }: { timezone: string }) {
             </option>
           ))}
         </select>
-        <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-slate-500">
+        <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[var(--color-fg-muted)]">
           ▾
         </span>
       </div>
       {preview && (
-        <p className="mt-2 text-xs text-slate-500">
-          Local time in {value}: <span className="text-slate-300 tabular-nums">{preview}</span>
+        <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
+          Local time in {value}:{' '}
+          <span className="text-[var(--color-fg)] tabular-nums">{preview}</span>
         </p>
       )}
-      {err && <p className="mt-2 text-xs text-red-300">{err}</p>}
+      {err && <p className="mt-2 text-xs text-rose-300">{err}</p>}
       <div className="mt-4 flex justify-end gap-2">
         {dirty && (
           <button
             type="button"
             onClick={() => setValue(timezone)}
             disabled={saving}
-            className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-500"
+            className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)] disabled:cursor-not-allowed disabled:text-[var(--color-fg-dim)]"
           >
             Discard
           </button>
@@ -172,7 +175,7 @@ function TimezoneCard({ timezone }: { timezone: string }) {
           type="button"
           onClick={save}
           disabled={!dirty || !valid || saving}
-          className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-1.5 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {saving && <Loader size={12} className="animate-spin" />}
           Save
@@ -190,16 +193,22 @@ const GAP_MAX = 480 // 8 hours — longer than any realistic active day
 
 function GapCard({ min, max }: { min: number; max: number }) {
   const { updateConfig } = useConfig()
-  const [lo, setLo] = useState(min)
-  const [hi, setHi] = useState(max)
+  // Pattern A3: bundle the editor state with the (min, max) it was reset against
+  // so changing props reset both sliders during render — no sync useEffect.
+  const [gapState, setGapState] = useState({ keyMin: min, keyMax: max, lo: min, hi: max })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => {
-    setLo(min)
-    setHi(max)
-  }, [min, max])
+  if (gapState.keyMin !== min || gapState.keyMax !== max) {
+    setGapState({ keyMin: min, keyMax: max, lo: min, hi: max })
+  }
+  const lo = gapState.keyMin === min && gapState.keyMax === max ? gapState.lo : min
+  const hi = gapState.keyMin === min && gapState.keyMax === max ? gapState.hi : max
+  const setLo = (next: number) =>
+    setGapState((s) => ({ keyMin: min, keyMax: max, lo: next, hi: s.hi }))
+  const setHi = (next: number) =>
+    setGapState((s) => ({ keyMin: min, keyMax: max, lo: s.lo, hi: next }))
 
   const dirty = lo !== min || hi !== max
   const valid = lo >= 0 && hi <= GAP_MAX && lo <= hi
@@ -212,7 +221,7 @@ function GapCard({ min, max }: { min: number; max: number }) {
       await updateConfig({ gap: { min_minutes: nextLo, max_minutes: nextHi } })
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -224,8 +233,8 @@ function GapCard({ min, max }: { min: number; max: number }) {
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
       <CardSubtitle>
-        The orchestrator places each day's commits at random times inside the schedule window, with
-        at least this much space between consecutive ones.
+        Each day's commits land at random times inside their window — always with at least this much
+        breathing room between them.
       </CardSubtitle>
 
       <SliderRow
@@ -243,11 +252,16 @@ function GapCard({ min, max }: { min: number; max: number }) {
         max={GAP_MAX}
       />
 
-      {!valid && <p className="mt-1 text-xs text-amber-300">Minimum must be ≤ maximum.</p>}
-      {err && <p className="mt-2 text-xs text-red-300">{err}</p>}
+      {!valid && (
+        <p className="mt-1 text-xs text-[var(--color-brand)]">
+          Minimum can't be larger than maximum.
+        </p>
+      )}
+      {err && <p className="mt-2 text-xs text-rose-300">{err}</p>}
       <CardFooter>
-        Plan: gaps between <span className="text-slate-400">{formatMinutes(lo)}</span> and{' '}
-        <span className="text-slate-400">{formatMinutes(hi)}</span>.
+        Commits will land between{' '}
+        <span className="text-[var(--color-fg)]">{formatMinutes(lo)}</span> and{' '}
+        <span className="text-[var(--color-fg)]">{formatMinutes(hi)}</span> apart.
       </CardFooter>
     </Card>
   )
@@ -269,8 +283,10 @@ function SliderRow({
   return (
     <div className="mb-4">
       <div className="mb-2 flex items-baseline justify-between">
-        <span className="text-xs tracking-wide text-slate-500 uppercase">{label}</span>
-        <span className="font-mono text-sm text-slate-200 tabular-nums">
+        <span className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">
+          {label}
+        </span>
+        <span className="font-mono text-sm text-[var(--color-fg)] tabular-nums">
           {formatMinutes(value)}
         </span>
       </div>
@@ -305,11 +321,11 @@ function PasswordCard() {
 
   const rotate = async () => {
     if (pw.length < 8) {
-      setState({ kind: 'error', message: 'Password must be at least 8 characters.' })
+      setState({ kind: 'error', message: 'Make it at least 8 characters.' })
       return
     }
     if (pw !== confirm) {
-      setState({ kind: 'error', message: "Passwords don't match." })
+      setState({ kind: 'error', message: "Those passwords don't match." })
       return
     }
     setState({ kind: 'loading' })
@@ -319,10 +335,14 @@ function PasswordCard() {
       setConfirm('')
       setState({
         kind: 'success',
-        message: 'Password rotated. The new password takes effect immediately for new sessions.',
+        message: "Password updated — it'll be in effect the next time you sign in.",
       })
     } catch (e) {
-      setState({ kind: 'error', message: e instanceof Error ? e.message : 'Failed.' })
+      setState({
+        kind: 'error',
+        message:
+          e instanceof Error ? e.message : "Couldn't change the password — give it another go.",
+      })
     }
   }
 
@@ -330,9 +350,9 @@ function PasswordCard() {
     <Card>
       <CardHeader title="Dashboard password" icon={<KeyRound size={18} />} />
       <CardSubtitle>
-        Rotates the Amplify basic-auth credentials for the username{' '}
-        <code className="font-mono text-slate-400">admin</code>. Update your password manager before
-        you sign out.
+        Changes the sign-in password for the username{' '}
+        <code className="font-mono text-[var(--color-fg)]">admin</code>. Save the new one in your
+        password manager before you sign out.
       </CardSubtitle>
 
       {state.kind === 'error' && (
@@ -358,10 +378,10 @@ function PasswordCard() {
           type="button"
           onClick={rotate}
           disabled={state.kind === 'loading' || !pw || !confirm}
-          className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-2 text-sm font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {state.kind === 'loading' && <Loader size={14} className="animate-spin" />}
-          Rotate password
+          Update password
         </button>
       </div>
     </Card>
@@ -381,13 +401,13 @@ function PasswordInput({
 }) {
   return (
     <label className="block">
-      <span className="text-xs tracking-wide text-slate-500 uppercase">{label}</span>
+      <span className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">{label}</span>
       <input
         type="password"
         value={value}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+        className="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
       />
     </label>
   )
@@ -405,7 +425,7 @@ function Banner({ kind, children }: { kind: 'error' | 'success'; children: React
       className={cn(
         'mb-4 flex items-start gap-2 rounded-md border px-3 py-2 text-sm',
         kind === 'error'
-          ? 'border-red-900/40 bg-red-950/20 text-red-200'
+          ? 'border-rose-900/40 bg-rose-950/20 text-rose-200'
           : 'border-emerald-900/40 bg-emerald-950/20 text-emerald-200',
       )}
     >
@@ -427,17 +447,29 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Pattern B: timer-driven boolean replaces a `Date.now()` comparison in render.
+  // The effect responds to the external `savedAt` event by flipping the flag on,
+  // then schedules it back off after the visible window.
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- responding to an external savedAt event (timestamp from parent), not synchronizing derived state. See https://react.dev/learn/you-might-not-need-an-effect#sharing-logic-between-event-handlers
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
         <Loader size={12} className="animate-spin" /> Saving…
       </span>
     )
   }
   if (dirty) {
-    return <span className="text-xs text-amber-300">Unsaved</span>
+    return <span className="text-xs text-[var(--color-brand)]">Unsaved</span>
   }
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

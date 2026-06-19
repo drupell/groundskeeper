@@ -21,20 +21,22 @@ export function CommitStylePage() {
   return (
     <div className="px-8 py-10">
       <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">Commit Style</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Shape the prompt and edit behavior the executor uses each time it commits.
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">
+          Commit Style
+        </h1>
+        <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          Shape the prompt and the editing behavior we use each time we commit.
         </p>
       </header>
 
       {error && (
-        <div className="mb-6 rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+        <div className="mb-6 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
           {error}
         </div>
       )}
 
       {loading || !config ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-[var(--color-fg-muted)]">One moment…</div>
       ) : (
         <div className="max-w-2xl space-y-6">
           <PromptCard style={config.commit_style} />
@@ -52,14 +54,18 @@ export function CommitStylePage() {
 
 function PromptCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [value, setValue] = useState(style.prompt)
+  // Pattern A3: track which saved prompt our local edit branched from, and
+  // reset during render when the server value changes. This preserves in-flight
+  // edits across re-renders without a sync useEffect.
+  const [valueState, setValueState] = useState({ key: style.prompt, value: style.prompt })
+  if (valueState.key !== style.prompt) {
+    setValueState({ key: style.prompt, value: style.prompt })
+  }
+  const value = valueState.key === style.prompt ? valueState.value : style.prompt
+  const setValue = (next: string) => setValueState({ key: style.prompt, value: next })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setValue(style.prompt)
-  }, [style.prompt])
 
   const trimmed = value.trim()
   const dirty = trimmed !== style.prompt
@@ -73,7 +79,7 @@ function PromptCard({ style }: { style: CommitStyleConfig }) {
       await updateConfig({ commit_style: { ...style, prompt: trimmed } })
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -84,27 +90,27 @@ function PromptCard({ style }: { style: CommitStyleConfig }) {
       <CardHeader title="Creative prompt" icon={<Sparkles size={18} />}>
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
-      <p className="mb-3 text-sm text-slate-400">
-        Sent to Nova Lite alongside each creative commit. Describe the tone, voice, and what the
-        model should add — comments, docstrings, helper utilities, whatever fits.
+      <p className="mb-3 text-sm text-[var(--color-fg-muted)]">
+        We send this to the model with every creative commit. Describe the tone, voice, and what it
+        should add — comments, docstrings, helper utilities, whatever fits.
       </p>
       <textarea
         rows={5}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-full resize-y rounded-md border border-slate-800 bg-slate-900 px-3 py-2 font-mono text-sm leading-relaxed text-slate-100 placeholder:text-slate-600 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 font-mono text-sm leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
         placeholder="e.g. Write code comments and docstrings in the style of a thoughtful, occasionally tired but passionate developer."
       />
-      {err && <p className="mt-2 text-xs text-red-300">{err}</p>}
+      {err && <p className="mt-2 text-xs text-rose-300">{err}</p>}
       <div className="mt-3 flex items-center justify-between gap-2">
-        <p className="text-xs text-slate-500">{trimmed.length} characters</p>
+        <p className="text-xs text-[var(--color-fg-muted)]">{trimmed.length} characters</p>
         <div className="flex gap-2">
           {dirty && (
             <button
               type="button"
               onClick={() => setValue(style.prompt)}
               disabled={saving}
-              className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-500"
+              className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)] disabled:cursor-not-allowed disabled:text-[var(--color-fg-dim)]"
             >
               Discard
             </button>
@@ -113,7 +119,7 @@ function PromptCard({ style }: { style: CommitStyleConfig }) {
             type="button"
             onClick={save}
             disabled={!dirty || !valid || saving}
-            className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-1.5 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
           >
             {saving && <Loader size={12} className="animate-spin" />}
             Save
@@ -130,15 +136,19 @@ function PromptCard({ style }: { style: CommitStyleConfig }) {
 
 function DestructiveCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [pct, setPct] = useState(() => Math.round(style.destructive_probability * 100))
+  const saved = Math.round(style.destructive_probability * 100)
+  // Pattern A3: keep slider position locally editable but snap it back when the
+  // saved probability changes underneath us (e.g. another tab saved). Resetting
+  // during render avoids the wasted useEffect render.
+  const [pctState, setPctState] = useState({ key: saved, value: saved })
+  if (pctState.key !== saved) {
+    setPctState({ key: saved, value: saved })
+  }
+  const pct = pctState.key === saved ? pctState.value : saved
+  const setPct = (next: number) => setPctState({ key: saved, value: next })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
-  useEffect(() => {
-    setPct(Math.round(style.destructive_probability * 100))
-  }, [style.destructive_probability])
-
-  const saved = Math.round(style.destructive_probability * 100)
   const dirty = pct !== saved
 
   const commit = async (next: number) => {
@@ -159,14 +169,18 @@ function DestructiveCard({ style }: { style: CommitStyleConfig }) {
       <CardHeader title="Destructive commits" icon={<Trash2 size={18} />}>
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
-      <p className="mb-4 text-sm text-slate-400">
-        Each fired commit has this chance of being a <em>maintenance</em> commit — the model decides
-        whether to remove low-value lines or rewrite an existing section in place, rather than
-        adding new content. Falls back to a creative commit if the file is nearly empty.
+      <p className="mb-4 text-sm text-[var(--color-fg-muted)]">
+        Every commit has this chance of being a <em>maintenance</em> commit. Instead of adding new
+        content, the model trims low-value lines or rewrites a section in place. If the file's too
+        thin to edit, we fall back to a creative commit.
       </p>
       <div className="mb-2 flex items-baseline justify-between">
-        <span className="text-xs tracking-wide text-slate-500 uppercase">Probability</span>
-        <span className="text-2xl font-semibold text-sky-300 tabular-nums">{pct}%</span>
+        <span className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">
+          Probability
+        </span>
+        <span className="text-2xl font-semibold text-[var(--color-brand)] tabular-nums">
+          {pct}%
+        </span>
       </div>
       <Slider
         value={pct}
@@ -177,14 +191,14 @@ function DestructiveCard({ style }: { style: CommitStyleConfig }) {
         onChange={setPct}
         onCommit={commit}
       />
-      <div className="mt-2 flex justify-between text-xs text-slate-500">
+      <div className="mt-2 flex justify-between text-xs text-[var(--color-fg-muted)]">
         <span>0%</span>
         <span>50%</span>
         <span>100%</span>
       </div>
       <CardFooter>
-        At <span className="text-slate-400">{pct}%</span>, roughly {humanFrequency(pct)} of commits
-        will be maintenance edits.
+        At <span className="text-[var(--color-fg)]">{pct}%</span>, roughly {humanFrequency(pct)} of
+        commits will be maintenance edits.
       </CardFooter>
     </Card>
   )
@@ -206,16 +220,27 @@ const LINE_CAP = 1000
 
 function LineRangeCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [minText, setMinText] = useState(String(style.min_lines))
-  const [maxText, setMaxText] = useState(String(style.max_lines))
+  // Pattern A3: composite key tracks the saved (min, max) pair we branched
+  // from; when either side changes on the server, we reset both inputs during
+  // render rather than papering over it with a sync useEffect.
+  const savedKey = `${style.min_lines}/${style.max_lines}`
+  const [textState, setTextState] = useState({
+    key: savedKey,
+    min: String(style.min_lines),
+    max: String(style.max_lines),
+  })
+  if (textState.key !== savedKey) {
+    setTextState({ key: savedKey, min: String(style.min_lines), max: String(style.max_lines) })
+  }
+  const minText = textState.key === savedKey ? textState.min : String(style.min_lines)
+  const maxText = textState.key === savedKey ? textState.max : String(style.max_lines)
+  const setMinText = (next: string) =>
+    setTextState((s) => ({ key: savedKey, min: next, max: s.key === savedKey ? s.max : maxText }))
+  const setMaxText = (next: string) =>
+    setTextState((s) => ({ key: savedKey, min: s.key === savedKey ? s.min : minText, max: next }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setMinText(String(style.min_lines))
-    setMaxText(String(style.max_lines))
-  }, [style.min_lines, style.max_lines])
 
   // Clamp only when computing what we'd save: min ≥ 1, max ≥ min, both ≤ cap.
   const cMin = Math.min(LINE_CAP, Math.max(1, parseInt(minText, 10) || 1))
@@ -233,7 +258,7 @@ function LineRangeCard({ style }: { style: CommitStyleConfig }) {
       setMaxText(String(cMax))
       setSavedAt(Date.now())
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.')
+      setErr(e instanceof Error ? e.message : "Couldn't save — give it another go.")
     } finally {
       setSaving(false)
     }
@@ -244,22 +269,22 @@ function LineRangeCard({ style }: { style: CommitStyleConfig }) {
       <CardHeader title="Lines added per commit" icon={<FileText size={18} />}>
         <SaveBadge saving={saving} dirty={dirty} savedAt={savedAt} />
       </CardHeader>
-      <p className="mb-4 text-sm text-slate-400">
-        On a creative commit the model adds somewhere in this range. Small ranges read as steady
-        activity; wide ranges look like sweeping refactors. Up to {LINE_CAP} lines.
+      <p className="mb-4 text-sm text-[var(--color-fg-muted)]">
+        On a creative commit, the model adds somewhere in this range. Small ranges read as steady
+        activity; wide ranges look more like sweeping refactors. Up to {LINE_CAP} lines.
       </p>
       <div className="grid grid-cols-2 gap-4">
         <NumberInput label="Minimum" value={minText} onChange={setMinText} placeholder="1" />
         <NumberInput label="Maximum" value={maxText} onChange={setMaxText} placeholder="8" />
       </div>
       {willClamp && (
-        <p className="mt-3 text-xs text-slate-500">
-          Saves as <span className="text-slate-300 tabular-nums">{cMin}</span>–
-          <span className="text-slate-300 tabular-nums">{cMax}</span> (clamped: min ≥ 1, max ≥ min,
-          ≤ {LINE_CAP}).
+        <p className="mt-3 text-xs text-[var(--color-fg-muted)]">
+          We'll save this as <span className="text-[var(--color-fg)] tabular-nums">{cMin}</span>–
+          <span className="text-[var(--color-fg)] tabular-nums">{cMax}</span> (min ≥ 1, max ≥ min,
+          both ≤ {LINE_CAP}).
         </p>
       )}
-      {err && <p className="mt-3 text-xs text-red-300">{err}</p>}
+      {err && <p className="mt-3 text-xs text-rose-300">{err}</p>}
       <div className="mt-4 flex justify-end gap-2">
         {dirty && (
           <button
@@ -269,7 +294,7 @@ function LineRangeCard({ style }: { style: CommitStyleConfig }) {
               setMaxText(String(style.max_lines))
             }}
             disabled={saving}
-            className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-500"
+            className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)] disabled:cursor-not-allowed disabled:text-[var(--color-fg-dim)]"
           >
             Discard
           </button>
@@ -278,7 +303,7 @@ function LineRangeCard({ style }: { style: CommitStyleConfig }) {
           type="button"
           onClick={save}
           disabled={!dirty || saving}
-          className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-ink)] px-3 py-1.5 text-xs font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {saving && <Loader size={12} className="animate-spin" />}
           Save
@@ -297,17 +322,33 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Pattern B: replace the impure `Date.now() - savedAt < 2_500` check in
+  // render with a timer-driven boolean that flips on save and back off after
+  // the window. Effect responds to the external savedAt event, so the
+  // synchronous setShowSaved call is allowed by set-state-in-effect.
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // Responding to an external event (savedAt timestamp changing); flipping
+    // the boolean synchronously is Pattern B for replacing the impure Date.now()
+    // check, but the rule still flags the sync call so we suppress it here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Pattern B: timer-driven badge responding to savedAt prop change
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
         <Loader size={12} className="animate-spin" /> Saving…
       </span>
     )
   }
   if (dirty) {
-    return <span className={cn('text-xs text-amber-300')}>Unsaved</span>
+    return <span className={cn('text-xs text-[var(--color-brand)]')}>Unsaved</span>
   }
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

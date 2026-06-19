@@ -1,416 +1,372 @@
 # Groundskeeper
 
-A personal tool that automates realistic-looking GitHub contribution activity
-on a repo you own. Designed to be deployed once into your own AWS account,
-controlled from a password-protected dashboard, and torn down with a single
-command when you're done.
+Groundskeeper is a framework for handing an LLM a repository you own plus
+a rough direction, then watching what it actually chooses to do with it.
+You point it at a repo, write a short style prompt, and shape a per-day
+commit-count curve. Once a day, an agent picks an eligible file, decides
+between a creative edit (additive content matching your prompt) or a
+destructive edit (removing or restructuring a small section), and commits
+the result. Over time you get a corpus of those choices: which files it
+reached for, what tone it landed on, what it left alone.
 
-> **Status: feature-complete dev preview.** The deploy + teardown scripts,
-> the shared backend library, all three Lambdas (API, orchestrator,
-> executor), and every dashboard page are wired and render real data:
-> Dashboard (with the prominent Vacation Mode control), Schedule (the hero
-> curve editor + editable per-day windows with a live over-constraint
-> warning), Commit Style, GitHub, Logs, and Settings. The full spec is
-> implemented end-to-end. See [What works today](#what-works-today) below.
+[![dev](https://github.com/drupell/groundskeeper/actions/workflows/dev.yml/badge.svg)](https://github.com/drupell/groundskeeper/actions/workflows/dev.yml)
+[![main](https://github.com/drupell/groundskeeper/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/drupell/groundskeeper/actions/workflows/main.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
----
+## What it does
 
-## How it will work
+A single observation cycle looks like this. You connect a GitHub token and
+a repo, write a style prompt that tells the agent what kinds of edits feel
+right for this codebase, and sculpt a distribution curve for how many
+commits a day are possible. Once a day at 12:00 UTC, a small Lambda samples
+a commit count from your curve and schedules that many one-time triggers at
+random times inside today's window.
 
-- Daily **Orchestrator Lambda** reads your config from DynamoDB, samples your
-  shaped commit-count distribution for today, and creates one-time
-  EventBridge Scheduler rules at randomized times inside your active window.
-- Each fired schedule invokes the **Commit Executor Lambda**, which picks a
-  file from your repo, asks **Amazon Bedrock (Nova Lite)** for a creative or
-  destructive edit, and writes the result back via the GitHub Contents API
-  as a commit authored by you.
-- The **dashboard** lets you configure your repo, schedule, distribution
-  shape, commit-style prompt, and vacation mode — all backed by an API
-  Gateway → Lambda → DynamoDB stack in your own account.
+As each scheduled time arrives, a second Lambda reads the repo, picks an
+eligible file, and asks Amazon Bedrock (Nova Lite) to choose between a
+creative or destructive edit and produce the patch plus commit message. The
+result lands via the GitHub Contents API as an ordinary commit, authored by
+the verified user behind your token. Every decision (file chosen, edit
+mode, prompt used, model output, success or failure) gets a row in
+DynamoDB. That log is the artifact: a record of how the agent behaved over
+days and weeks against a single body of code.
 
----
+The dashboard is a React app served from AWS Amplify behind basic auth. It's
+where you connect the token, pick the repo, sculpt the curve, edit each
+day's window, write the style prompt, and toggle vacation mode. A single
+API Gateway endpoint forwards to one API Lambda, which reads and writes a
+single DynamoDB table. Your token never leaves Secrets Manager. Everything
+is tagged `project=groundskeeper`, runs on on-demand and pay-per-use
+services, and is fully removable with the companion `teardown.py` script.
+
+```
+   ┌──────────────┐         ┌──────────────────┐
+   │  Dashboard   │ ──API──▶│  api Lambda      │──┐
+   │  (Amplify)   │         └──────────────────┘  │
+   └──────────────┘                               │
+                                                  ▼
+   ┌──────────────────┐    ┌──────────────────┐  ┌───────────────┐
+   │  EventBridge     │───▶│ orchestrator     │──│  DynamoDB     │
+   │  Scheduler       │    │ Lambda (daily)   │  │  (single tbl) │
+   │  (12:00 UTC)     │    └──────────────────┘  └───────────────┘
+   └──────────────────┘             │                   ▲
+            ▲                       ▼                   │
+            │              ┌──────────────────┐         │
+            └──────────────│ one-time rules   │         │
+                           └──────────────────┘         │
+                                    │                   │
+                                    ▼                   │
+                           ┌──────────────────┐         │
+                           │ executor Lambda  │─────────┘
+                           │ (per commit)     │
+                           └──────────────────┘
+                              │            │
+                              ▼            ▼
+                       ┌────────────┐  ┌──────────────┐
+                       │ Bedrock    │  │ Secrets Mgr  │
+                       │ Nova Lite  │  │ (GitHub PAT) │
+                       └────────────┘  └──────────────┘
+                              │
+                              ▼
+                       ┌────────────┐
+                       │ GitHub API │
+                       └────────────┘
+```
+
+| Component             | What it does                                          |
+| --------------------- | ----------------------------------------------------- |
+| `api` Lambda          | Backs every dashboard request behind API Gateway      |
+| `orchestrator` Lambda | Plans each day's commits at 12:00 UTC                 |
+| `executor` Lambda     | Runs one scheduled commit end-to-end                  |
+| DynamoDB              | Single table for config, run records, and commit logs |
+| Secrets Manager       | Stores your GitHub personal access token              |
+| EventBridge Scheduler | Daily cron plus one-time per-commit rules             |
+| Bedrock (Nova Lite)   | Generates each commit's content                       |
+| Amplify               | Hosts the dashboard behind basic auth                 |
+
+## What v0.1.0 is (and isn't)
+
+This first release is the foundation: enough to run a real observation loop
+end-to-end against one repo, with one model, on one AWS account. The arc
+beyond is real but not in this release.
+
+**Shipped in v0.1.0:**
+
+- One repo per deployment, owned by you, configured from the dashboard.
+- One agent: Amazon Bedrock Nova Lite, behind a fixed two-mode prompt
+  scaffold (creative vs destructive edit).
+- One observer: a single dashboard user, basic-auth'd, with full read/write
+  on schedule, prompt, curve, and vacation toggle.
+- A complete per-commit log in DynamoDB: file picked, edit mode, prompt,
+  model output, GitHub result.
+- Fully tagged, fully removable AWS deployment via `deploy.py` and
+  `teardown.py`.
+
+**Deferred to later versions:**
+
+- Multi-repo deployments and multi-agent comparisons.
+- Pluggable model providers and richer prompt scaffolds (research-then-edit,
+  plan-then-execute).
+- Decision telemetry surfaced as dashboards on top of the commit log.
+- Cross-model behavioral comparisons against the same repo.
+
+**A note on the contribution graph.** Because the agent's commits are
+authored by your verified GitHub user, GitHub counts them on your
+contribution graph like any other commit. That's a side effect of how the
+executor reaches GitHub, not the point of the project. The point is the
+corpus of choices in the log. The disclaimers below take this seriously.
 
 ## Honest disclaimers
 
-Read these before deploying.
+Please read these before deploying.
 
-- **GitHub Terms of Service.** Automating commits to inflate your contribution
-  graph is in tension with GitHub's spirit-of-use guidelines. This tool only
-  ever touches a single repository that you own, with a PAT you control. Use
-  it on a personal repo you don't mind looking artificial. Don't point it at
-  shared/work repos. Don't use it to misrepresent yourself professionally.
-- **AWS cost.** Realistic steady-state cost for a single user is well under
-  **$1/month** — and most of that is a flat Secrets Manager fee, not AI usage.
-  See [What it costs](#what-it-costs) for the line-by-line breakdown.
-- **You own the resources.** Everything runs in your AWS account under
-  resources tagged `project=groundskeeper`. `teardown.py` will remove them.
-
----
+- **Every commit is LLM-authored.** Content and message both come from
+  Bedrock Nova Lite, generated against the prompt you wrote and the file
+  the agent picked. The commits are real (real SHAs, authored as the user
+  behind your token), but they're not your work, and the whole purpose of
+  this project is to observe the agent honestly. Be honest with yourself
+  and anyone reading the repo about who wrote them.
+- **The contribution graph counts them.** Groundskeeper exists to study
+  agent behavior, not to game GitHub. But the commits are normal commits,
+  so they show up on your graph. Don't point this at a repo where that
+  misrepresents you: shared repos, work repos, or anything where human
+  authorship matters. Use it on a personal repo you own and have flagged
+  as an experiment.
+- **Single-tenant by design.** v0.1.0 is one user, one dashboard password,
+  one GitHub token, one repo, one model. Multi-repo, multi-agent, and
+  hosted-service work belongs in later versions; PRs that bolt on
+  multi-tenancy to this release are out of scope.
+- **Cost.** Single-user usage typically lands under $1/month. Most of that
+  is the flat Secrets Manager per-secret fee, not AI inference. Full
+  breakdown is in [What it costs](#what-it-costs).
+- **You own the resources.** Everything runs in your AWS account.
+  `teardown.py` removes it all when you're done.
 
 ## Prerequisites
 
-- **AWS account** with permissions to create IAM roles, Lambda, DynamoDB,
-  API Gateway, EventBridge, Secrets Manager, S3, and Amplify.
-- **AWS CLI** configured locally (`aws configure`, SSO, or env vars). The
-  deploy script uses whatever credentials it finds and confirms the target
-  account with you before doing anything.
-- **Bedrock model access** for `amazon.nova-lite-v1:0` in your chosen region.
-  Enable in the Bedrock console → *Model access*. Deploy will warn you if it
-  isn't enabled.
-- **Python 3.10+** (the deploy script creates its own virtualenv).
-- **Node 18+** on your `PATH` — only needed for the frontend build step.
-- **GitHub PAT** with the `repo` scope. Create at
-  https://github.com/settings/tokens/new. You'll paste it into the dashboard,
-  not into the script.
+- An **AWS account** where you have admin (deploy creates IAM roles and
+  policies).
+- **Bedrock model access** for `amazon.nova-lite-v1:0` in the region you
+  plan to deploy to. Turn it on in the
+  [Bedrock console → Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html).
+  `us-east-1` and `us-west-2` are safe defaults.
+- A **GitHub personal access token (classic)** with the `repo` scope.
+  Create one [here](https://github.com/settings/tokens/new?scopes=repo).
+  You'll paste it into the dashboard, never into the script.
+- **macOS or Linux.**
+- **Python 3.12+** and [**uv**](https://docs.astral.sh/uv/#installation) on
+  your `PATH`.
+- **Node 20+** on your `PATH`. `deploy.py` builds the dashboard for you;
+  Node just needs to be available.
+- The **AWS CLI** configured locally (`aws configure`, SSO, or env vars).
+  The deploy script uses whatever credentials it finds and confirms the
+  target account with you before changing anything.
 
----
+## First-time deploy
 
-## What works today
-
-- `deploy.py` — full guided AWS provisioning: IAM (with policy preview),
-  DynamoDB, Secrets Manager, S3 artifacts bucket, three Lambdas, API
-  Gateway with API key + CORS, EventBridge daily rule, Amplify app with
-  basic-auth password protection. Idempotent and re-runnable. Each Lambda
-  zip bundles `backend/shared/` under `shared/` so handlers can do
-  `from shared.foo import bar`.
-- `.groundskeeper-deploy-state.json` (created on first run) — every resource
-  ID/ARN, used by future `teardown.py`.
-- `backend/shared/` — the cross-Lambda library: structured JSON logging
-  (`log`), typed errors (`errors`), API-Gateway response helpers
-  (`responses`), DynamoDB single-table helpers (`ddb`), Secrets-Manager-
-  backed PAT storage (`secrets`), config schema + validation (`config`),
-  distribution-curve sampling (`distribution`), commit-time slot planning
-  with gap clamping (`timeplan`), a PAT-authed GitHub REST client
-  (`github`), repo-file eligibility rules (`files`), Bedrock Nova Lite
-  invocation + prompt builders (`bedrock`), and Amplify basic-auth
-  password rotation (`amplify`).
-- `backend/lambdas/api/handler.py` — the dashboard API Lambda, fully
-  implemented. Single `{proxy+}` Lambda routes:
-  `GET/PUT/PATCH /config`, `POST /github/verify`, `PUT/DELETE /github/pat`,
-  `GET /github/status`, `GET/PUT /github/repo`, `GET /logs`, `GET /runs`,
-  `GET /status`, `PUT /vacation`, `POST /password`, `GET /health`. Every
-  request emits structured JSON logs with `aws_request_id` and every
-  error maps cleanly to its HTTP status.
-- `backend/lambdas/orchestrator/handler.py` — daily planner. Honors vacation
-  mode, resolves the target local date (today or tomorrow depending on
-  whether today's window is still ahead), samples the commit count from the
-  user-shaped curve, plans times with gap constraints, and creates one
-  EventBridge Scheduler one-time rule per commit
-  (`ActionAfterCompletion=DELETE` keeps cleanup automatic). Persists a
-  `RUN#<local_date>` record for the dashboard.
-- `backend/lambdas/executor/handler.py` — per-commit worker. Picks an
-  eligible random file from the configured repo, asks Bedrock Nova Lite
-  for either a creative or destructive edit (probability configured), and
-  writes the result back via the GitHub Contents API as a commit authored
-  by the verified GitHub user. Logs success or failure to DynamoDB as
-  `LOG#<iso>#<rand>`.
-
-The **frontend** is feature-complete: Vite 6 + React 19 + TypeScript + Tailwind
-4 + React Query, with ESLint + Prettier pinned at the same quality bar as the
-Python tooling. Six wired pages — Dashboard, Schedule, Commit Style, GitHub,
-Logs, Settings — all backed by real API data through React Query hooks.
-`npm run build` is clean (≈ 363 KB JS / 27 KB CSS, gzipped 110 / 5.8).
-
-Page summaries:
-
-- **Dashboard** — a prominent **Vacation Mode** card (enable indefinitely or
-  until a date, warm amber active state, one-click "Resume now"), status
-  cards, latest run summary, recent activity feed.
-- **Schedule** — editable commit-count range, the hero **distribution curve
-  editor** (SVG with drag handles per integer count, four preset shapes —
-  Uniform / Bell / Left-skewed / Right-skewed, "Average X commits/day"
-  readout, live probability histogram), and an editable **weekly window**
-  (per-day on/off toggle + start/end time pickers, off days dimmed) with a
-  live amber warning when a day's window can't fit the max commits at the
-  configured gap. Math in `lib/distribution.ts` mirrors
-  `backend/shared/distribution.py` exactly.
-- **Commit Style** — Nova Lite prompt textarea, destructive-probability
-  slider with frequency readout, and a line-range card.
-- **GitHub** — paste → verify → preview card → save PAT flow, plus a live
-  repository card with branch, last-commit, push-permission warning, and an
-  "Open on GitHub" link.
-- **Logs** — paginated commit log with "Load more".
-- **Settings** — timezone picker (browser-wide `Intl.supportedValuesOf`
-  with a local-time sanity preview), commit-gap sliders, and Amplify
-  basic-auth password rotation.
-
-The dashboard now implements the spec end-to-end. The only remaining work is
-real-world validation: a live `deploy.py` run against an AWS account with
-Bedrock Nova Lite model access enabled. See
-[Testing without waiting](#testing-without-waiting) for how to verify the
-commit pipeline in seconds instead of waiting on the nightly cron.
-
----
-
-## Running the deploy
-
-From the project root:
+From the repo root:
 
 ```sh
-python3 deploy.py
+# Install deploy.py's own dependencies into .venv/ at the repo root.
+# uv reads pyproject.toml + uv.lock and resolves everything for you.
+uv sync
+
+# Run the guided deploy. --environment prod tags every resource as prod
+# and names them groundskeeper-prod-*; use --environment dev for a parallel
+# dev stack you can blow away independently.
+uv run python deploy.py --environment prod
 ```
 
-On first run the script will:
+If you use AWS SSO, the script picks up your profile from the environment.
+Export it before running if it isn't already your default:
 
-1. Create `.venv-deploy/` and install its own dependencies into it, then
-   re-exec itself inside the venv.
-2. Confirm the AWS account + region using your local credentials.
-3. Show you exactly which IAM policies it's about to attach, and ask before
-   applying them.
-4. Provision every resource, printing a `→` for each step and a `✓` when
-   it succeeds.
-5. Prompt for the dashboard password, build the frontend (if present),
-   upload it to Amplify, and wait for the deployment to go live.
-6. Print a summary table with the dashboard URL and all resource IDs.
+```sh
+# Refresh your SSO session, then point deploy.py at the right profile.
+aws sso login --profile my-sso-profile
+export AWS_PROFILE=my-sso-profile
 
-Re-running is safe — existing resources are reused.
+uv run python deploy.py --environment prod
+```
 
-Useful flags:
+What you'll see, in order:
 
-- `--region us-west-2` — override the region.
-- `--yes` — skip the IAM policy preview confirmation (you've already seen
-  it on a prior run).
-- `--skip-frontend` — provision AWS infra without building/deploying the
-  React app (useful while the dashboard is in development).
+1. The detected AWS account and region, with a yes/no confirmation.
+2. A preview of every IAM policy `deploy.py` is about to attach, with
+   another yes/no confirmation. (Pass `--yes` on subsequent runs to skip
+   this once you've reviewed it.)
+3. Per-resource progress with a `→` while it's working and a `✓` when it
+   succeeds. Idempotent; re-running reuses anything already there.
+4. A prompt for the dashboard password. This becomes the Amplify basic-auth
+   password for the user `admin`. Pick something memorable; you can rotate
+   it later from the dashboard.
+5. The frontend build (`npm ci && npm run build`), the upload to Amplify,
+   and a wait for the deployment to go live.
+6. A summary banner that looks roughly like:
 
----
+   ```
+   ✓ Dashboard is live at https://main.<app-id>.amplifyapp.com
+     username: admin
+     password: (the one you just set)
+   ```
+
+Open the URL, log in, and continue with [Using the dashboard](#using-the-dashboard).
 
 ## Using the dashboard
 
-After `deploy.py` finishes it prints your dashboard URL
-(`https://main.<app-id>.amplifyapp.com`). Open it and you'll get a browser
-basic-auth prompt — log in with username **`admin`** and the dashboard
-password you chose during deploy.
+Set things up in the order below. You can come back and tune anything
+later. Every change saves to DynamoDB immediately and takes effect on the
+next orchestrator run.
 
-First-run setup, in order:
+**Step 1, connect GitHub.** Sidebar → _GitHub_. Paste your personal access
+token and click _Verify token_. A preview card shows the avatar, name,
+email, and scopes the token carries. If the `repo` scope is missing, the
+dashboard tells you and refuses to save. Click _Save this token_. It's
+written to Secrets Manager, never to DynamoDB or logs. Then in the
+_Repository_ card, paste the URL (or `owner/repo`) of the repo you want to
+commit to and click _Validate & save_. The card shows the default branch,
+last commit, and a warning if your token can't push. If you rename the repo
+on GitHub later, Groundskeeper detects the redirect and updates the stored
+repo identifier automatically on the next read or run. No manual fix.
 
-1. **GitHub** (sidebar → *GitHub*).
-   - Paste your Personal Access Token and click **Verify token**. A preview
-     card shows the avatar, name, email, and scopes the token carries. If the
-     `repo` scope is missing it tells you so and blocks the save.
-   - Click **Save this token**. It's written to AWS Secrets Manager — never
-     to DynamoDB, environment variables, or logs.
-   - In the **Repository** card, paste the URL (or `owner/repo`) of a repo
-     **you own and don't mind looking automated**. Click **Validate & save**.
-     The card then shows the default branch, last commit, and a warning if
-     your PAT can't push.
-2. **Schedule** (sidebar → *Schedule*).
-   - Set the **min/max commits per day** (e.g. 0–4) and **Save**.
-   - **Sculpt the distribution curve**: drag the points, or click a preset
-     (Uniform / Bell / Left-skewed / Right-skewed). The histogram and the
-     "you'll average ~X commits/day" readout update live.
-   - In **Weekly window**, toggle each day on/off and set its start/end time.
-     Off days are dimmed. If a window is too short to fit your max commits at
-     the configured gap, an amber banner tells you which days will be
-     auto-clamped.
-3. **Commit Style** (sidebar → *Commit Style*).
-   - Write the creative prompt that's fed to Nova Lite (tone, voice, what to
-     add). Set the **destructive-commit probability** and the **line range**.
-4. **Settings** (sidebar → *Settings*).
-   - Confirm your **timezone** (the orchestrator plans the day's window in
-     local time), tune the **commit gap**, and rotate the dashboard password
-     if you want.
+**Step 2, shape the schedule.** Sidebar → _Schedule_. Set the _min/max
+commits per day_ (say 0–4) and save. Then sculpt the _distribution curve_:
+drag the handles, or pick a preset (Uniform, Bell, Left-skewed,
+Right-skewed). The histogram and the "you'll average ~X commits/day"
+readout update live. In _Weekly window_, toggle each day on or off and set
+its start/end time; off days are dimmed. If a day's window is too short to
+fit the max commits at the configured gap, an amber banner names the days
+that will get auto-clamped.
 
-That's it. The orchestrator runs every night at **00:05 UTC**: it reads your
-config, samples a commit count for the upcoming local day, and schedules that
-many commits at random times inside your window. As they fire you'll see them
-appear on GitHub and on the **Dashboard** / **Logs** pages.
+**Step 3, pick a voice.** Sidebar → _Commit Style_. Write the prompt that
+Nova Lite follows for every commit: tone, voice, what kinds of edits feel
+right for this repo. Set the _destructive-commit probability_ (the chance
+any given commit removes code rather than adds it) and the _line range_ per
+commit.
 
-To pause without tearing anything down, use the **Vacation Mode** card at the
-top of the Dashboard — pause indefinitely or until a date, and resume with one
-click. The nightly planner exits cleanly while it's on.
+**Step 4, settings.** Sidebar → _Settings_. Confirm your timezone (the
+orchestrator plans each day's window in local time), tune the
+between-commits gap, toggle light or dark theme, and rotate the dashboard
+password if you'd like.
 
----
+**The Dashboard page.** The home page surfaces the _Vacation Mode_ card
+(pause indefinitely or until a date you pick; the orchestrator exits
+cleanly while it's on), today's plan card with a relative-date label
+("today" / "tomorrow"), status cards, the most recent run, and a recent
+activity feed. The _Test & preview_ card has two buttons: _Run a test
+commit now_ fires the executor immediately, and _Preview tonight's plan_
+runs the orchestrator in dry-run mode. There's also a _Run scheduler now_
+button if you want the planner to re-plan today right away rather than
+waiting for the next 12:00 UTC tick.
 
-## Project layout
-
-```
-Groundskeeper/
-├── deploy.py                     # Guided AWS provisioning
-├── teardown.py                   # Guided AWS teardown (mirror of deploy.py)
-├── requirements-deploy.txt       # boto3, rich, questionary
-├── backend/
-│   ├── lambdas/
-│   │   ├── orchestrator/         # Nightly planner (full)
-│   │   ├── executor/             # Per-commit worker (full)
-│   │   └── api/                  # Dashboard API behind API GW (full)
-│   └── shared/                   # Cross-Lambda utilities
-└── frontend/                     # Vite + React + Tailwind + shadcn/ui
-    ├── src/{components,pages,hooks,lib}/
-    └── public/
-```
-
----
-
-## Development tooling
-
-### Python
-
-Python code is formatted with **Black** and linted with **Ruff**, both pinned
-in `requirements-dev.txt`. The settings live in `pyproject.toml`.
-
-`pytest` (+ `boto3`) is also pinned in `requirements-dev.txt`; the suite lives
-in `backend/tests/` and covers the pure logic with no AWS calls.
-
-```sh
-python3 -m venv .venv-dev
-.venv-dev/bin/pip install -r requirements-dev.txt
-
-.venv-dev/bin/black deploy.py teardown.py backend/      # format
-.venv-dev/bin/ruff check deploy.py teardown.py backend/ # lint
-.venv-dev/bin/python -m pytest -q                       # test (52 cases)
-```
-
-### Frontend
-
-The frontend uses **Prettier** for formatting and **ESLint** (flat config,
-with `@typescript-eslint` + `eslint-plugin-react-hooks` +
-`eslint-plugin-react-refresh`) for linting, at the same strict-but-opinionated
-bar as the Python setup. Both are pinned in `frontend/package.json`.
-
-```sh
-cd frontend
-npm install
-
-npm run format         # prettier --write .
-npm run lint           # eslint .
-npm run typecheck      # tsc --noEmit
-npm run build          # tsc --noEmit && vite build
-npm run dev            # vite dev server
-```
-
----
-
-## Teardown
-
-```sh
-python3 teardown.py
-```
-
-`teardown.py` is the mirror image of `deploy.py`. It self-bootstraps the
-same virtualenv, reads `.groundskeeper-deploy-state.json`, falls back to
-name-based discovery for anything missing from state, and prints the full
-list of resources it found before asking you to confirm. On confirmation
-it removes — in dependency order — the EventBridge daily rule, any
-leftover one-time scheduler rules, all three Lambdas, the API Gateway
-REST API + API key + usage plan, the DynamoDB table, the GitHub PAT
-secret, the S3 artifacts bucket (with all object versions), the IAM
-roles + inline policies, the Amplify app, and the CloudWatch log groups.
-Re-running is safe: each delete swallows `NotFound` errors, so a partial
-teardown can resume cleanly.
-
-Useful flags:
-
-- `--yes` — skip the final confirmation (the resource list is still shown).
-- `--force-secret-delete` — permanently delete the Secrets Manager secret
-  instead of scheduling a 7-day recovery window (use if you intend to
-  redeploy immediately).
-- `--keep-logs` — leave CloudWatch log groups behind.
-- `--region us-west-2` — override the region from the state file.
-
----
+**The Logs page** shows every commit attempt, success or failure, with
+pagination via _Load more_.
 
 ## What it costs
 
-Everything runs in **your** AWS account, so you pay AWS directly. For a single
-user committing a few times a day, here's the honest breakdown (us-east-1
-list prices, late-2025; your region and the AWS Free Tier may make several of
-these literally $0):
+You pay AWS directly. For a single user committing a few times a day on
+us-east-1 list prices, the honest breakdown is:
 
-| Service | What it's used for | Typical monthly cost |
-|---|---|---|
-| **Secrets Manager** | Stores your GitHub PAT | **~$0.40** (flat per-secret fee — the single biggest line item) |
-| **Bedrock — Nova Lite** | Generating each commit's content | **~$0.05–$0.50** (scales with file size × commits/day; Nova Lite is one of the cheapest models) |
-| **Lambda** | Orchestrator + executor runs | ~$0.00 (≈150 short invocations/month — comfortably inside Free Tier) |
-| **DynamoDB** | Config + run/commit logs (on-demand) | ~$0.00 (a few hundred tiny reads/writes) |
-| **API Gateway** | Dashboard ↔ backend | ~$0.00 (only while you have the dashboard open) |
-| **EventBridge Scheduler** | One-time commit triggers | ~$0.00 (far inside the free allowance) |
-| **Amplify Hosting** | Serving the dashboard | ~$0.00 (static site, low traffic; Free Tier) |
-| **S3** | Lambda/frontend build artifacts | ~$0.00 (a few MB) |
-| **CloudWatch Logs** | Structured Lambda logs | ~$0.00–$0.05 (tiny JSON volume) |
-| **Total** | | **typically well under $1/month** |
+| Service               | What it's for                          | Typical monthly cost                                                               |
+| --------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| Bedrock (Nova Lite)   | Commit content generation              | ~$0.0006 per commit (input + output combined); ~$0.05–$0.10/month at 5 commits/day |
+| Lambda                | Orchestrator + executor invocations    | ~$0, well inside the Free Tier at this scale                                       |
+| DynamoDB (on-demand)  | Config + run/commit logs               | ~$0, a few hundred small reads/writes a month                                      |
+| EventBridge Scheduler | Daily cron + one-time per-commit rules | ~$0, well inside the free allowance                                                |
+| API Gateway           | Dashboard ↔ backend                    | ~$0, only fires while the dashboard is open                                        |
+| Amplify Hosting       | Serving the dashboard                  | ~$0.15/GB-month stored + ~$0.01/GB served; the bundle is a few hundred KB          |
+| Secrets Manager       | Stores your GitHub token               | ~$0.40 flat per-secret fee; the largest single line item                           |
+| CloudWatch Logs       | Structured Lambda logs                 | ~$0–$0.05                                                                          |
+| **Total**             |                                        | **typically well under $1/month at ≤5 commits/day**                                |
 
-Heavier use (say 10 commits/day against large files) pushes the Bedrock line
-toward **$1–$2/month**; everything else stays effectively free at single-user
-volume. These are estimates — prices change and vary by region. Check the
-[AWS Pricing Calculator](https://calculator.aws/) and your own bill, and run
-`teardown.py` when you're done so nothing lingers.
+Heavier use (say 10 commits/day against large files) pushes the Bedrock
+line a few cents higher; everything else stays effectively flat at
+single-user volume. Prices change and vary by region; check the
+[AWS Pricing Calculator](https://calculator.aws/) and your own bill, and
+run `teardown.py` when you're done so nothing lingers.
 
----
+## Redeploying after code changes
 
-## FAQ
+The deploy command is idempotent. Re-run the same one-liner:
 
-**Will this violate GitHub's Terms of Service?**
+```sh
+# Re-runs the full provisioning flow. Existing resources are reused;
+# Lambda zips and the frontend bundle are rebuilt and re-uploaded.
+uv run python deploy.py --environment prod
+```
 
-Honest answer: it's in tension with the *spirit* of GitHub's rules, even
-though the mechanics are ordinary API usage. Using the Contents API with your
-own PAT to commit to your own repo is exactly what that API is for — the
-automation itself isn't the problem. The problem is what the contribution
-graph then implies. GitHub's Acceptable Use Policies prohibit "inauthentic"
-activity and activity intended to deceive; manufacturing a green graph to make
-recruiters or employers believe you were coding when you weren't is squarely
-the kind of thing those policies are aimed at.
+Pass `--yes` to skip the IAM policy preview confirmation on re-runs once
+you've reviewed it.
 
-So: as a personal toy, a learning project for event-driven AWS, or commits to
-a throwaway repo you're honest about — it harms no one. As profile padding you
-present to employers — it's dishonest, a bad idea reputationally regardless of
-any policy, and could get contributions or the account actioned. This tool
-doesn't try to evade detection and we don't recommend trying to. Use it on a
-repo you own, and don't misrepresent yourself.
+## Tearing down
 
-**Are the commits "real"?**
+```sh
+# Removes every resource deploy.py created, in dependency order. Reads
+# .groundskeeper-deploy-state.json; falls back to name-based discovery
+# for anything the state file doesn't know about.
+uv run python teardown.py --environment prod
+```
 
-Yes. They're genuine commits with real SHAs and real file changes, authored as
-your verified GitHub identity, written through the GitHub Contents API. The
-contribution graph counts them like any other commit. Whether they look
-*plausible* on inspection depends on your prompt and the repo.
+The Secrets Manager secret is **soft-deleted with a 7-day recovery window**
+by default, so you can change your mind. If you're redeploying immediately
+and want the same secret name available, add `--force-secret-delete`.
 
-**Can I use a private repo?**
+Other useful flags:
 
-Yes. Private-repo commits count toward your graph only if you enable
-*Settings → Profile → Private contributions* on GitHub. Groundskeeper only
-ever touches the single repo you configure.
+- `--yes`: skip the final confirmation (the resource list is still
+  printed).
+- `--keep-logs`: leave the CloudWatch log groups behind.
+- `--region us-west-2`: override the region from the state file.
 
-**Is my PAT safe?**
+## Customizing
 
-It's stored only in AWS Secrets Manager in your own account — never in
-DynamoDB, environment variables, or logs. The dashboard sits behind Amplify
-basic auth. You can disconnect the token from the GitHub page anytime, and
-`teardown.py` deletes the secret entirely.
+**Commit style.** The _Commit Style_ page is the main creative control.
+The prompt is fed verbatim to Nova Lite alongside the file's existing
+content. The destructive-probability slider sets how often a commit removes
+code instead of adding it. The line-range card sets the minimum and maximum
+number of lines a single commit can touch.
 
-**Which region should I pick?**
+**The distribution curve.** The curve on the _Schedule_ page sets the
+probability of each possible per-day commit count, between your min and
+max. A bell curve clusters most days around the middle of the range; a
+left-skewed curve makes light days the norm with the occasional heavier
+one; a right-skewed curve does the opposite; uniform makes every count
+equally likely. Sculpting this, rather than picking a fixed "3 commits a
+day", is what gives the agent a varied cadence instead of a rigid one.
 
-One where Amazon Bedrock offers Nova Lite *and* you've enabled model access
-for it (Bedrock console → *Model access*). `us-east-1` and `us-west-2` are
-safe choices. `deploy.py` warns you if model access isn't enabled.
+**Per-day window.** Each weekday can be on or off and has its own
+start/end time. Off days are dimmed in the editor. The orchestrator only
+plans commits inside the window for the day it's planning.
 
-**I deployed but no commits are appearing.**
+**Vacation mode.** The _Dashboard_ page's _Vacation Mode_ card pauses
+the planner indefinitely or until a date you pick. Active days are
+highlighted in warm amber. One click resumes.
 
-Walk the checklist: (1) Bedrock model access enabled for `amazon.nova-lite-v1:0`?
-(2) PAT saved and showing the `repo` scope on the GitHub page? (3) Repo
-configured and the card shows push access? (4) Vacation Mode off? (5) Has the
-nightly orchestrator (00:05 UTC) actually run yet, and is today an enabled day
-with a window still ahead? The **Logs** page and CloudWatch
-(`/aws/lambda/groundskeeper-*`) show exactly what happened. You don't have to
-wait for the nightly cron to test — see
-[Testing without waiting](#testing-without-waiting).
-
-**How do I stop it temporarily vs. permanently?**
-
-Temporarily: Vacation Mode on the Dashboard. Permanently: `python3 teardown.py`,
-which removes every resource it created.
-
----
+**Light / dark theme.** Toggle in the header. The theme preference is
+saved per-browser; the rest of the dashboard's look comes from a small set
+of semantic CSS-variable tokens in `frontend/src/index.css` that define
+both modes.
 
 ## Testing without waiting
 
-The orchestrator only fires at 00:05 UTC and schedules commits at *random*
-future times, so you don't want to wait on the cron to see whether everything
-works. The fastest end-to-end check, with **zero code changes**, is to invoke
-the executor Lambda directly — it runs the full real flow (pick a file → ask
-Bedrock → commit → log):
+The orchestrator only fires at 12:00 UTC and schedules commits at random
+future times, so you don't want to wait on the cron to confirm everything's
+wired up.
+
+**Easiest: the dashboard.** On the _Dashboard_ page, the _Test & preview_
+card has _Run a test commit now_ (fires the executor immediately; a real
+commit lands within seconds) and _Preview tonight's plan_ (runs the
+orchestrator in dry-run mode and shows the target day, sampled count, and
+planned local times, **without** creating any schedules or writing a run
+record). The _Run scheduler now_ button on the same page runs the
+orchestrator for real, against today.
+
+**From the CLI.** Same flows, via the AWS CLI. Invoke the executor
+end-to-end:
 
 ```sh
+# Picks an eligible file, asks Bedrock for an edit, commits it via the
+# GitHub Contents API, logs the result. Preconditions: token saved, repo
+# configured, config in place (i.e. you've finished dashboard setup).
 aws lambda invoke \
   --function-name groundskeeper-executor \
   --payload '{}' \
@@ -418,33 +374,89 @@ aws lambda invoke \
   /dev/stdout
 ```
 
-Within a few seconds you should see a new commit on your repo and a new entry
-on the dashboard **Logs** page. (Preconditions: PAT saved, repo configured,
-config present — i.e. you've done the dashboard setup above.)
-
-**From the dashboard (no CLI needed).** The **Dashboard** has a *Test &
-preview* card with two buttons:
-
-- **Run a test commit now** — invokes the executor asynchronously; the
-  resulting commit shows up in *Recent activity* and on the **Logs** page
-  within a few seconds (the card auto-refreshes).
-- **Preview tonight's plan** — runs the orchestrator in **dry-run** mode and
-  shows exactly what it *would* schedule (target day, sampled count, the
-  planned local times) **without creating any schedules or writing a run
-  record**. Great for sanity-checking your curve/window/gap settings.
-
-**Dry-run from the CLI**, equivalently:
+Or run the orchestrator in dry-run mode:
 
 ```sh
-aws lambda invoke --function-name groundskeeper-orchestrator \
-  --payload '{"dry_run": true}' --cli-binary-format raw-in-base64-out /dev/stdout
+# Returns what it WOULD schedule for today; doesn't create rules or write
+# a run record. Useful for sanity-checking your curve / window / gap.
+aws lambda invoke \
+  --function-name groundskeeper-orchestrator \
+  --payload '{"dry_run": true}' \
+  --cli-binary-format raw-in-base64-out \
+  /dev/stdout
 ```
 
-**Unit tests.** The pure logic (distribution sampling, time-slot planning,
-file eligibility, repo-URL parsing, config validation, prompt cleanup) has a
-`pytest` suite with no AWS dependencies:
+**Pure-logic tests.** The distribution sampling, time-slot planning, file
+eligibility, repo-URL parsing, config validation, and prompt-cleanup logic
+all have unit tests that run with no AWS dependencies:
 
 ```sh
-.venv-dev/bin/pip install -r requirements-dev.txt
-.venv-dev/bin/python -m pytest -q
+uv run pytest -q
 ```
+
+## Troubleshooting
+
+**Bedrock model access denied (`AccessDeniedException` from the executor).**
+You haven't enabled `amazon.nova-lite-v1:0` in your region yet. Go to the
+[Bedrock console → Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)
+in the region you deployed to and request access. It's usually instant.
+
+**Token rejected, or saved but the _Repository_ card warns it can't push.**
+The token is probably missing the `repo` scope (private repos need the
+full `repo` scope, not just `public_repo`). Mint a new one
+[here](https://github.com/settings/tokens/new?scopes=repo) with `repo`
+checked, paste it into _GitHub → Verify token_, and re-save.
+
+**You renamed the repo on GitHub.** Nothing to do. The GitHub client
+follows the redirect, resolves the new `owner/repo`, and updates the
+stored value on the next read or run. The _Repository_ card will show the
+new name the next time it loads.
+
+**SSO token expired during a deploy.** Refresh and re-run. `deploy.py` is
+idempotent and picks up where it left off:
+
+```sh
+aws sso login --profile my-sso-profile
+uv run python deploy.py --environment prod
+```
+
+**The cron didn't fire.** Check CloudWatch Logs for the orchestrator:
+
+```sh
+# Tail the last hour of orchestrator logs.
+aws logs tail /aws/lambda/groundskeeper-orchestrator --since 1h
+```
+
+Common causes: Vacation Mode is on, today isn't an enabled weekday, or
+today's window has already fully passed (in which case the orchestrator
+plans for _tomorrow_; the dashboard's "today's plan" card shows which date
+it's planning for).
+
+**A request returns "Permanently moved" or 301.** That's the GitHub
+redirect auto-heal path firing. It's expected and harmless; the request is
+automatically retried against the new location.
+
+## How it works (architecture)
+
+The three Lambdas share a single `backend/shared/` package that handles
+config + validation, DynamoDB access, the GitHub REST client, Bedrock
+invocation, Secrets Manager, the distribution sampler, the time-slot
+planner, structured logging, typed errors, the Amplify password rotation
+helper, and the EventBridge Scheduler helper.
+
+The deeper version (single-table key design, every Lambda env var, full
+API Gateway routing table, every IAM policy) lives in
+[CONTRIBUTING.md](./CONTRIBUTING.md) alongside the development setup.
+
+## Contributing
+
+This is a single-tenant personal tool. Bug fixes, docs improvements, and
+small features that fit that scope are welcome. Refactors toward
+multi-tenancy or a hosted service aren't. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the dev loop, the test setup, and
+the PR checklist.
+
+## License
+
+[MIT](./LICENSE). Short, permissive, no warranty. Do what you want; don't
+blame me.

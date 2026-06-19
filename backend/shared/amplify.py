@@ -19,7 +19,7 @@ def _find_app_id() -> str:
     if _cached_app_id:
         return _cached_app_id
     if not _AMPLIFY_APP_NAME:
-        raise UpstreamError("AMPLIFY_APP_NAME env var is not set.", code="config_missing")
+        raise UpstreamError("AMPLIFY_APP_NAME env var isn't set.", code="config_missing")
     next_token: str | None = None
     while True:
         kwargs: dict = {"maxResults": 100}
@@ -33,12 +33,12 @@ def _find_app_id() -> str:
         next_token = resp.get("nextToken")
         if not next_token:
             break
-    raise NotFound(f"Amplify app '{_AMPLIFY_APP_NAME}' not found.")
+    raise NotFound(f"Couldn't find the Amplify app '{_AMPLIFY_APP_NAME}'.")
 
 
 def rotate_password(new_password: str) -> None:
     if not isinstance(new_password, str) or len(new_password) < 8:
-        raise BadRequest("Password must be a string of at least 8 characters.")
+        raise BadRequest("Pick a password with at least 8 characters.")
     app_id = _find_app_id()
     creds = base64.b64encode(f"{_USERNAME}:{new_password}".encode()).decode()
     try:
@@ -49,6 +49,6 @@ def rotate_password(new_password: str) -> None:
         )
     except ClientError as e:
         raise UpstreamError(
-            f"Amplify rejected the update: {e.response['Error'].get('Message', e)}",
+            f"Amplify wouldn't accept the update: {e.response['Error'].get('Message', e)}",
             code="amplify_error",
         ) from e

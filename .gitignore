@@ -1,33 +1,51 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
-.venv-deploy/
-.venv-dev/
-.venv/
-
-# Deploy state (contains AWS resource IDs — local-only)
-.groundskeeper-deploy-state.json
-.groundskeeper-build/
-
-# Linter caches
+build/
+dist/
+.pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.venv/
+# Legacy: pre-uv twin venvs (.venv-deploy / .venv-dev).
+.venv-*/
 
-# Frontend
-node_modules/
+# Node / Vite
+frontend/node_modules/
 frontend/dist/
 frontend/.vite/
-# All env files — deploy.py writes frontend/.env.production with a live
-# API key + API Gateway URL. Never commit any of them.
+frontend/*.log
+frontend/.env.local
+# deploy.py writes frontend/.env.production with a live API key + API Gateway
+# URL. Never commit any of them.
 frontend/.env
 frontend/.env.*
+frontend/.env.production
+.pnp.*
+.npm
+
+# Deploy state (contains AWS account id + resource ARNs — local-only)
+.groundskeeper-deploy-state.json
+.groundskeeper-build/
+/frontend.zip
+/backend.zip
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Editor
-.vscode/
-.idea/
 *.swp
+*.swo
+
+# Editors
+.idea/
+.vscode/
+*.iml
+
+# Direct secrets — belt-and-suspenders
+.env
+.env.*
+*.pem
+*.key
+credentials.json

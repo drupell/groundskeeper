@@ -46,17 +46,26 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
 
   // Local editing state. We initialize from the persisted curve, resampled
   // onto the integer positions we display. Any external change to the saved
-  // curve (e.g. after a successful save round-trip) re-syncs.
-  const [localCurve, setLocalCurve] = useState<Curve>(() => sampleCurveAtN(incoming, n))
+  // curve (e.g. after a successful save round-trip) re-syncs via the
+  // "adjust state during rendering" escape hatch below.
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const syncKey = `${n}:${JSON.stringify(incoming)}`
+  const [curveState, setCurveState] = useState<{ key: string; value: Curve }>(() => ({
+    key: syncKey,
+    value: sampleCurveAtN(incoming, n),
+  }))
+  if (curveState.key !== syncKey) {
+    setCurveState({ key: syncKey, value: sampleCurveAtN(incoming, n) })
+  }
+  const localCurve = curveState.key === syncKey ? curveState.value : sampleCurveAtN(incoming, n)
+  const setLocalCurve = (updater: Curve | ((prev: Curve) => Curve)) => {
+    setCurveState((prev) => ({
+      key: syncKey,
+      value: typeof updater === 'function' ? (updater as (p: Curve) => Curve)(prev.value) : updater,
+    }))
+  }
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
-
-  useEffect(() => {
-    setLocalCurve(sampleCurveAtN(incoming, n))
-    // We deliberately want to resync when the persisted curve or the range
-    // changes; comparing by JSON keeps the dependency stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(incoming), n])
 
   const svgRef = useRef<SVGSVGElement | null>(null)
 
@@ -126,8 +135,8 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-400">
-          Drag the points or pick a shape. The curve is the relative weight per count.
+        <p className="text-sm text-[var(--color-fg-muted)]">
+          Drag the points or pick a shape. The curve shows how much weight each count gets.
         </p>
         <SaveBadge saving={saving} savedAt={savedAt} />
       </div>
@@ -139,7 +148,7 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
         <PresetButton label="Right-skewed" onClick={() => applyPreset('right-skew')} />
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40">
+      <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)]">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${VB_W} ${VB_H}`}
@@ -159,7 +168,7 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
               x2={PAD_LEFT + PLOT_W}
               y1={yAt(g)}
               y2={yAt(g)}
-              stroke="rgb(30 41 59)"
+              stroke="var(--color-border)"
               strokeWidth={1}
               strokeDasharray={g === 0 || g === 1 ? '' : '2 4'}
             />
@@ -172,7 +181,7 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
             fontSize={10}
             textAnchor="end"
             dominantBaseline="middle"
-            fill="rgb(100 116 139)"
+            fill="var(--color-fg-dim)"
           >
             more
           </text>
@@ -182,18 +191,18 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
             fontSize={10}
             textAnchor="end"
             dominantBaseline="middle"
-            fill="rgb(100 116 139)"
+            fill="var(--color-fg-dim)"
           >
             less
           </text>
 
           {/* Area under the curve */}
-          <path d={areaD} fill="rgb(56 189 248 / 0.12)" />
+          <path d={areaD} fill="var(--color-brand-soft)" />
           {/* The curve itself */}
           <path
             d={pathD}
             fill="none"
-            stroke="rgb(56 189 248)"
+            stroke="var(--color-brand)"
             strokeWidth={2}
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -211,10 +220,10 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
                   cx={cx}
                   cy={cy}
                   r={HANDLE_R}
-                  fill="rgb(15 23 42)"
-                  stroke="rgb(56 189 248)"
+                  fill="var(--color-surface-elevated)"
+                  stroke="var(--color-brand)"
                   strokeWidth={isActive ? 3 : 2}
-                  className={cn(isActive && 'drop-shadow-[0_0_8px_rgba(56,189,248,0.6)]')}
+                  className={cn(isActive && 'drop-shadow-[0_0_8px_rgba(245,158,11,0.6)]')}
                 />
                 {/* Larger transparent hit target */}
                 <circle
@@ -231,7 +240,7 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
                   y={PAD_TOP + PLOT_H + 18}
                   fontSize={11}
                   textAnchor="middle"
-                  fill={isActive ? 'rgb(186 230 253)' : 'rgb(148 163 184)'}
+                  fill={isActive ? 'var(--color-brand)' : 'var(--color-fg-muted)'}
                   className="tabular-nums"
                 >
                   {min + i}
@@ -244,7 +253,7 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
 
       {flatWarn && (
         <div className="rounded-md border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
-          The curve is flat at zero — every count is equally likely. Drag a point up to bias the
+          The curve is flat at zero, so every count's equally likely. Drag a point up to bias the
           distribution.
         </div>
       )}
@@ -263,7 +272,7 @@ function PresetButton({ label, onClick }: { label: string; onClick: () => void }
     <button
       type="button"
       onClick={onClick}
-      className="rounded-md border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white"
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-sunk)] hover:text-[var(--color-fg)]"
     >
       {label}
     </button>
@@ -271,21 +280,34 @@ function PresetButton({ label, onClick }: { label: string; onClick: () => void }
 }
 
 function SaveBadge({ saving, savedAt }: { saving?: boolean; savedAt: number | null }) {
-  const [, force] = useState(0)
+  // "Saved" badge flashes for 2s after each save. We track the savedAt the
+  // badge is currently showing for; a fresh savedAt flips it on during
+  // render, and a timer flips it back off.
+  const [shownFor, setShownFor] = useState<number | null>(null)
+  const showSaved = shownFor !== null && shownFor === savedAt
+
+  // Adjust state during rendering when a new save lands — see
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  // shownFor === -savedAt encodes "this savedAt has already timed out", so
+  // we don't re-trigger the badge after the timer flips it off.
+  if (savedAt !== null && shownFor !== savedAt && shownFor !== -savedAt) {
+    setShownFor(savedAt)
+  }
+
   useEffect(() => {
-    if (!savedAt) return
-    const t = window.setTimeout(() => force((v) => v + 1), 2_000)
-    return () => clearTimeout(t)
+    if (savedAt === null) return
+    const t = window.setTimeout(() => setShownFor(-savedAt), 2_000)
+    return () => window.clearTimeout(t)
   }, [savedAt])
 
   if (saving) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
         <Loader size={12} className="animate-spin" /> Saving…
       </span>
     )
   }
-  if (savedAt && Date.now() - savedAt < 2_000) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved
@@ -308,14 +330,16 @@ function Histogram({
 }) {
   const peak = Math.max(...probs.map((p) => p.prob), 0.001)
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-4">
       <div className="mb-3 flex items-baseline justify-between">
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-[var(--color-fg-muted)]">
           On active days, you'll average{' '}
-          <span className="font-semibold text-sky-300 tabular-nums">~{average.toFixed(2)}</span>{' '}
-          commits/day.
+          <span className="font-semibold text-[var(--color-brand)] tabular-nums">
+            ~{average.toFixed(2)}
+          </span>{' '}
+          commits a day.
         </p>
-        <p className="text-xs text-slate-500 tabular-nums">
+        <p className="text-xs text-[var(--color-fg-muted)] tabular-nums">
           range {min}–{max}
         </p>
       </div>
@@ -328,14 +352,16 @@ function Histogram({
           const heightPct = (prob / peak) * 100
           return (
             <div key={count} className="flex flex-col items-center gap-1">
-              <div className="relative h-24 w-full overflow-hidden rounded-sm bg-slate-800/60">
+              <div className="relative h-24 w-full overflow-hidden rounded-sm bg-[var(--color-surface-elevated)]">
                 <div
-                  className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-sky-500/70 to-sky-300/80 transition-[height] duration-200 ease-out"
+                  className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[var(--color-brand)]/70 to-[var(--color-brand)]/40 transition-[height] duration-200 ease-out"
                   style={{ height: `${heightPct}%` }}
                 />
               </div>
-              <div className="text-[10px] font-medium text-slate-300 tabular-nums">{pct}%</div>
-              <div className="text-[10px] text-slate-500 tabular-nums">{count}</div>
+              <div className="text-[10px] font-medium text-[var(--color-fg)] tabular-nums">
+                {pct}%
+              </div>
+              <div className="text-[10px] text-[var(--color-fg-muted)] tabular-nums">{count}</div>
             </div>
           )
         })}

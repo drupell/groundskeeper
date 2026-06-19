@@ -12,31 +12,35 @@ Re-runs are safe: each delete step swallows ``NotFound`` / ``NoSuchEntity`` so
 a partial teardown can be resumed without errors.
 
 Prerequisites:
-  - Python 3.10+
+  - Python 3.12+
+  - uv (https://docs.astral.sh/uv/#installation)
   - AWS CLI configured (any of: env vars, ~/.aws/credentials, SSO)
 """
 
 # ---------------------------------------------------------------------------
 # BOOTSTRAP — stdlib only above this line. Third-party imports come after the
-# venv re-exec below.
+# uv sync + venv re-exec below.
 # ---------------------------------------------------------------------------
 import json
 import os
+import shutil as _bootstrap_shutil
 import subprocess
 import sys
-import venv
 from pathlib import Path
 
 PROJECT_NAME = "Groundskeeper"
 PROJECT_TAG_KEY = "project"
 PROJECT_TAG_VALUE = "groundskeeper"
+ENVIRONMENT_TAG_KEY = "environment"
+ENVIRONMENT_CHOICES = ("dev", "prod")
+DEFAULT_ENVIRONMENT = "prod"
 
 ROOT = Path(__file__).resolve().parent
-VENV_DIR = ROOT / ".venv-deploy"
-REQUIREMENTS = ROOT / "requirements-deploy.txt"
+VENV_DIR = ROOT / ".venv"
+PYPROJECT = ROOT / "pyproject.toml"
 STATE_FILE = ROOT / ".groundskeeper-deploy-state.json"
 
-PY_MIN = (3, 10)
+PY_MIN = (3, 12)
 
 
 def _venv_python() -> Path:
@@ -60,26 +64,19 @@ def _bootstrap_and_reexec() -> None:
             f"ERROR: Python {PY_MIN[0]}.{PY_MIN[1]}+ required, found {sys.version.split()[0]}\n"
         )
         sys.exit(1)
-    if not VENV_DIR.exists():
-        print(f"[bootstrap] Creating venv at {VENV_DIR.relative_to(ROOT)} …")
-        venv.EnvBuilder(with_pip=True, clear=False, upgrade_deps=False).create(str(VENV_DIR))
+    uv_path = _bootstrap_shutil.which("uv")
+    if uv_path is None:
+        sys.stderr.write(
+            "ERROR: `uv` is required to bootstrap this script.\n"
+            "       Install it from https://docs.astral.sh/uv/#installation, then re-run.\n"
+        )
+        sys.exit(1)
+    print("[bootstrap] Syncing dependencies with uv …")
+    subprocess.check_call([uv_path, "sync", "--quiet"], cwd=str(ROOT))
     py = _venv_python()
     if not py.exists():
-        sys.stderr.write(f"ERROR: venv python not found at {py}\n")
+        sys.stderr.write(f"ERROR: venv python not found at {py} after `uv sync`\n")
         sys.exit(1)
-    print("[bootstrap] Installing teardown dependencies …")
-    subprocess.check_call(
-        [
-            str(py),
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--disable-pip-version-check",
-            "-r",
-            str(REQUIREMENTS),
-        ]
-    )
     os.execv(str(py), [str(py), __file__, *sys.argv[1:]])
 
 
@@ -145,7 +142,7 @@ def load_state() -> dict:
         try:
             return json.loads(STATE_FILE.read_text())
         except json.JSONDecodeError:
-            warn(f"{STATE_FILE.name} is unreadable — falling back to discovery.")
+            warn(f"Couldn't read {STATE_FILE.name} — falling back to name-based discovery.")
     return {}
 
 
@@ -184,6 +181,40 @@ def info(msg: str) -> None:
     console.print(f"  [dim]·[/dim] {msg}")
 
 
+def _env_filter_verdict(tags: dict[str, str], environment: str) -> tuple[bool, bool]:
+    """Decide whether a resource bearing ``tags`` should be torn down.
+
+    Returns ``(matches, is_legacy)``:
+      * matches    — True if the resource belongs to this environment OR is
+                     a legacy resource (project=groundskeeper, no environment
+                     tag set yet).
+      * is_legacy  — True only for the legacy case; the caller prints a note
+                     so the user knows a re-deploy will add the env tag.
+
+    A resource missing the ``project`` tag entirely never matches — even if
+    its name collides — so cross-project name reuse can't cause an
+    accidental deletion.
+    """
+    if tags.get(PROJECT_TAG_KEY) != PROJECT_TAG_VALUE:
+        return False, False
+    env_value = tags.get(ENVIRONMENT_TAG_KEY)
+    if env_value is None:
+        return True, True
+    return env_value == environment, False
+
+
+def _tags_from_pairs(pairs) -> dict[str, str]:
+    """Normalize various list-of-pairs tag shapes to a flat dict."""
+    out: dict[str, str] = {}
+    for item in pairs or []:
+        key = item.get("Key") or item.get("key")
+        if key is None:
+            continue
+        value = item.get("Value") if "Value" in item else item.get("value", "")
+        out[key] = value or ""
+    return out
+
+
 def _is_not_found(exc: ClientError) -> bool:
     # Deliberately strict: BadRequestException is NOT here. Many APIs throw it
     # for genuine problems, and treating it as "already gone" would silently
@@ -218,12 +249,12 @@ def confirm_account_and_region(
         caller = sts.get_caller_identity()
     except NoCredentialsError:
         fail(
-            "No AWS credentials found. Run `aws configure` or set "
-            "AWS_PROFILE / AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY."
+            "No AWS credentials found. Run `aws configure`, or set "
+            "AWS_PROFILE (or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)."
         )
         sys.exit(1)
     except ClientError as e:
-        fail(f"AWS credential check failed: {e}")
+        fail(f"Couldn't check AWS credentials: {e}")
         sys.exit(1)
     account = caller["Account"]
     arn = caller["Arn"]
@@ -234,9 +265,9 @@ def confirm_account_and_region(
     # nuking prod when you meant dev) impossible rather than merely unlikely.
     if expected_account and account != expected_account:
         fail(
-            f"Account guard failed: credentials resolve to {account} but "
-            f"--account asserted {expected_account}. Aborting before any "
-            f"resource is touched."
+            f"Account guard caught a mismatch: your credentials resolve to "
+            f"{account}, but --account asked for {expected_account}. Aborting "
+            f"before anything is touched."
         )
         sys.exit(1)
 
@@ -249,11 +280,12 @@ def confirm_account_and_region(
     console.print(t)
 
     if non_interactive:
-        ok(f"Account {account} matches --account guard. Proceeding non-interactively.")
+        ok(f"Account {account} matches the --account guard. Proceeding non-interactively.")
         return account, region, caller
 
     if not questionary.confirm(
-        f"Tear down {PROJECT_NAME} in this account/region?", default=False
+        f"Tear down {PROJECT_NAME} in this account and region?",
+        default=False,
     ).ask():
         sys.exit(0)
     return account, region, caller
@@ -283,9 +315,25 @@ def make_clients(region: str) -> dict:
 # ---------------------------------------------------------------------------
 # Discovery — figure out what to delete using state file + name fallback.
 # ---------------------------------------------------------------------------
-def discover(clients: dict, state: dict, account: str, region: str) -> dict[str, list[str]]:
-    """Return a dict of resources we plan to delete, keyed by category."""
+def discover(
+    clients: dict, state: dict, account: str, region: str, environment: str
+) -> dict[str, list[str]]:
+    """Return a dict of resources we plan to delete, keyed by category.
+
+    Only resources tagged ``project=groundskeeper`` AND
+    ``environment=<environment>`` are included. As a migration affordance,
+    resources missing the ``environment`` tag entirely (legacy deploys from
+    before the env-scoping change) are still included — with a note printed
+    once, since the next deploy will retag them.
+    """
     section("Discovery")
+    legacy_seen: list[str] = []
+
+    def _check(tags: dict[str, str], label: str) -> bool:
+        matches, is_legacy = _env_filter_verdict(tags, environment)
+        if matches and is_legacy:
+            legacy_seen.append(label)
+        return matches
 
     inventory: dict[str, list[str]] = {
         "lambda_functions": [],
@@ -305,23 +353,36 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
     # Lambda
     for name in LAMBDA_NAMES:
         try:
-            clients["lambda"].get_function(FunctionName=name)
-            inventory["lambda_functions"].append(name)
+            fn = clients["lambda"].get_function(FunctionName=name)
+            tags = fn.get("Tags") or {}
+            if _check(tags, f"lambda/{name}"):
+                inventory["lambda_functions"].append(name)
         except ClientError as e:
             if not _is_not_found(e):
                 raise
 
-    # API Gateway — state file first, then name-based fallback
-    apigw_state = state.get("api_gateway", {})
-    api_id = apigw_state.get("rest_api_id")
-    if api_id:
+    # API Gateway — state file first, then name-based fallback.
+    # The REST-API summary doesn't include tags, so we look them up explicitly
+    # via tag_resource's GET counterpart.
+    def _apigw_tags(arn: str) -> dict[str, str]:
         try:
-            clients["apigw"].get_rest_api(restApiId=api_id)
-            inventory["api_gateway_ids"].append(api_id)
+            return dict(clients["apigw"].get_tags(resourceArn=arn).get("tags", {}))
+        except ClientError as e:
+            if _is_not_found(e):
+                return {}
+            raise
+
+    apigw_state = state.get("api_gateway", {})
+    state_api_id = apigw_state.get("rest_api_id")
+    candidate_api_ids: list[str] = []
+    if state_api_id:
+        try:
+            clients["apigw"].get_rest_api(restApiId=state_api_id)
+            candidate_api_ids.append(state_api_id)
         except ClientError as e:
             if not _is_not_found(e):
                 raise
-    if not inventory["api_gateway_ids"]:
+    if not candidate_api_ids:
         pos: str | None = None
         while True:
             kwargs: dict = {"limit": 500}
@@ -330,10 +391,14 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
             resp = clients["apigw"].get_rest_apis(**kwargs)
             for item in resp.get("items", []):
                 if item["name"] == API_GATEWAY_NAME:
-                    inventory["api_gateway_ids"].append(item["id"])
+                    candidate_api_ids.append(item["id"])
             pos = resp.get("position")
             if not pos:
                 break
+    for cid in candidate_api_ids:
+        arn = f"arn:aws:apigateway:{region}::/restapis/{cid}"
+        if _check(_apigw_tags(arn), f"apigateway/{cid}"):
+            inventory["api_gateway_ids"].append(cid)
 
     # API key
     pos = None
@@ -343,7 +408,10 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
             kwargs["position"] = pos
         resp = clients["apigw"].get_api_keys(**kwargs)
         for k in resp.get("items", []):
-            if k["name"] == API_KEY_NAME:
+            if k["name"] != API_KEY_NAME:
+                continue
+            arn = f"arn:aws:apigateway:{region}::/apikeys/{k['id']}"
+            if _check(_apigw_tags(arn), f"apikey/{k['id']}"):
                 inventory["api_keys"].append(k["id"])
         pos = resp.get("position")
         if not pos:
@@ -357,7 +425,10 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
             kwargs["position"] = pos
         resp = clients["apigw"].get_usage_plans(**kwargs)
         for p in resp.get("items", []):
-            if p["name"] == USAGE_PLAN_NAME:
+            if p["name"] != USAGE_PLAN_NAME:
+                continue
+            arn = f"arn:aws:apigateway:{region}::/usageplans/{p['id']}"
+            if _check(_apigw_tags(arn), f"usageplan/{p['id']}"):
                 inventory["usage_plans"].append(p["id"])
         pos = resp.get("position")
         if not pos:
@@ -365,13 +436,26 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
 
     # EventBridge daily rule
     try:
-        clients["events"].describe_rule(Name=ORCHESTRATOR_RULE_NAME)
-        inventory["eventbridge_rules"].append(ORCHESTRATOR_RULE_NAME)
+        rule = clients["events"].describe_rule(Name=ORCHESTRATOR_RULE_NAME)
+        try:
+            tag_resp = clients["events"].list_tags_for_resource(ResourceARN=rule["Arn"])
+            tags = _tags_from_pairs(tag_resp.get("Tags", []))
+        except ClientError as e:
+            if _is_not_found(e):
+                tags = {}
+            else:
+                raise
+        if _check(tags, f"rule/{ORCHESTRATOR_RULE_NAME}"):
+            inventory["eventbridge_rules"].append(ORCHESTRATOR_RULE_NAME)
     except ClientError as e:
         if not _is_not_found(e):
             raise
 
-    # EventBridge Scheduler one-time schedules
+    # EventBridge Scheduler one-time schedules.
+    # These are created at runtime by the orchestrator (not by deploy.py) so
+    # they don't carry our tags — we match them by name prefix only. If you
+    # run dev + prod in the same account, schedule names collide; clear them
+    # by running teardown from the matching env's deploy.
     for prefix in SCHEDULE_PREFIXES:
         next_token: str | None = None
         while True:
@@ -396,16 +480,27 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
 
     # DynamoDB
     try:
-        clients["dynamodb"].describe_table(TableName=DDB_TABLE_NAME)
-        inventory["dynamodb_tables"].append(DDB_TABLE_NAME)
+        table = clients["dynamodb"].describe_table(TableName=DDB_TABLE_NAME)["Table"]
+        try:
+            tag_resp = clients["dynamodb"].list_tags_of_resource(ResourceArn=table["TableArn"])
+            tags = _tags_from_pairs(tag_resp.get("Tags", []))
+        except ClientError as e:
+            if _is_not_found(e):
+                tags = {}
+            else:
+                raise
+        if _check(tags, f"dynamodb/{DDB_TABLE_NAME}"):
+            inventory["dynamodb_tables"].append(DDB_TABLE_NAME)
     except ClientError as e:
         if not _is_not_found(e):
             raise
 
     # Secrets
     try:
-        clients["secrets"].describe_secret(SecretId=PAT_SECRET_NAME)
-        inventory["secrets"].append(PAT_SECRET_NAME)
+        secret = clients["secrets"].describe_secret(SecretId=PAT_SECRET_NAME)
+        tags = _tags_from_pairs(secret.get("Tags", []))
+        if _check(tags, f"secret/{PAT_SECRET_NAME}"):
+            inventory["secrets"].append(PAT_SECRET_NAME)
     except ClientError as e:
         if not _is_not_found(e):
             raise
@@ -414,7 +509,21 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
     bucket_name = state.get("s3_artifacts_bucket") or f"{PREFIX}-artifacts-{account}-{region}"
     try:
         clients["s3"].head_bucket(Bucket=bucket_name)
-        inventory["s3_buckets"].append(bucket_name)
+        try:
+            tag_resp = clients["s3"].get_bucket_tagging(Bucket=bucket_name)
+            tags = _tags_from_pairs(tag_resp.get("TagSet", []))
+        except ClientError as e:
+            # NoSuchTagSet means the bucket has no tags at all — treat as
+            # empty so legacy buckets without our tags are skipped.
+            code = e.response["Error"].get("Code", "")
+            if code in {"NoSuchTagSet", "NoSuchTagSetError"}:
+                tags = {}
+            elif _is_not_found(e):
+                tags = {}
+            else:
+                raise
+        if _check(tags, f"s3/{bucket_name}"):
+            inventory["s3_buckets"].append(bucket_name)
     except ClientError as e:
         if not _is_not_found(e) and e.response["Error"].get("Code") != "404":
             raise
@@ -423,7 +532,16 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
     for role in (LAMBDA_ROLE_NAME, SCHEDULER_ROLE_NAME):
         try:
             clients["iam"].get_role(RoleName=role)
-            inventory["iam_roles"].append(role)
+            try:
+                tag_resp = clients["iam"].list_role_tags(RoleName=role)
+                tags = _tags_from_pairs(tag_resp.get("Tags", []))
+            except ClientError as e:
+                if _is_not_found(e):
+                    tags = {}
+                else:
+                    raise
+            if _check(tags, f"iam/{role}"):
+                inventory["iam_roles"].append(role)
         except ClientError as e:
             if not _is_not_found(e):
                 raise
@@ -436,7 +554,19 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
             kwargs["nextToken"] = next_token
         resp = clients["amplify"].list_apps(**kwargs)
         for a in resp.get("apps", []):
-            if a["name"] == AMPLIFY_APP_NAME:
+            if a["name"] != AMPLIFY_APP_NAME:
+                continue
+            tags = dict(a.get("tags") or {})
+            if not tags:
+                # list_apps omits tags on some API versions; fall back to
+                # list_tags_for_resource against the app ARN.
+                try:
+                    tr = clients["amplify"].list_tags_for_resource(resourceArn=a["appArn"])
+                    tags = dict(tr.get("tags") or {})
+                except ClientError as e:
+                    if not _is_not_found(e):
+                        raise
+            if _check(tags, f"amplify/{a['appId']}"):
                 inventory["amplify_apps"].append(a["appId"])
         next_token = resp.get("nextToken")
         if not next_token:
@@ -456,6 +586,13 @@ def discover(clients: dict, state: dict, account: str, region: str) -> dict[str,
             break
 
     _print_inventory(inventory)
+    if legacy_seen:
+        # One-line note per the migration plan: a re-deploy will add the
+        # environment tag to these in-place.
+        info(
+            f"Legacy match (no environment tag yet): {', '.join(legacy_seen)} "
+            f"— they'll be retagged on the next deploy."
+        )
     return inventory
 
 
@@ -486,7 +623,7 @@ def _print_inventory(inventory: dict[str, list[str]]) -> None:
         display = "\n".join(items) if len(items) <= 10 else f"{len(items)} items"
         t.add_row(label, display)
     if not any_found:
-        console.print("  [green]✓[/green] Nothing left to delete — already torn down.")
+        console.print("  [green]✓[/green] Nothing left to delete — your account is already clean.")
     else:
         console.print(t)
 
@@ -510,9 +647,9 @@ def delete_eventbridge_rules(clients: dict, names: list[str]) -> None:
             ok(f"Deleted rule {name}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Rule {name} already gone")
+                info(f"Rule {name} was already gone")
             else:
-                fail(f"Could not delete rule {name}: {e}")
+                fail(f"Couldn't delete rule {name}: {e}")
 
 
 def delete_scheduler_schedules(clients: dict, names: list[str]) -> None:
@@ -527,7 +664,7 @@ def delete_scheduler_schedules(clients: dict, names: list[str]) -> None:
             deleted += 1
         except ClientError as e:
             if not _is_not_found(e):
-                fail(f"Could not delete schedule {name}: {e}")
+                fail(f"Couldn't delete schedule {name}: {e}")
     ok(f"Removed {deleted} schedule(s)")
 
 
@@ -542,9 +679,9 @@ def delete_lambdas(clients: dict, names: list[str]) -> None:
             ok(f"Deleted {name}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"{name} already gone")
+                info(f"{name} was already gone")
             else:
-                fail(f"Could not delete {name}: {e}")
+                fail(f"Couldn't delete {name}: {e}")
 
 
 def delete_api_gateway(
@@ -576,10 +713,10 @@ def delete_api_gateway(
                         )
                     except ClientError as e:
                         if not _is_not_found(e):
-                            warn(f"Could not detach stage {val} from plan {plan_id}: {e}")
+                            warn(f"Couldn't detach stage {val} from plan {plan_id}: {e}")
             except ClientError as e:
                 if not _is_not_found(e):
-                    warn(f"Could not read usage plan {plan_id} stages: {e}")
+                    warn(f"Couldn't read the stages on usage plan {plan_id}: {e}")
 
             keys_resp = apigw.get_usage_plan_keys(usagePlanId=plan_id, limit=500)
             for k in keys_resp.get("items", []):
@@ -587,14 +724,14 @@ def delete_api_gateway(
                     apigw.delete_usage_plan_key(usagePlanId=plan_id, keyId=k["id"])
                 except ClientError as e:
                     if not _is_not_found(e):
-                        warn(f"Could not detach key {k['id']} from plan {plan_id}: {e}")
+                        warn(f"Couldn't detach key {k['id']} from plan {plan_id}: {e}")
             apigw.delete_usage_plan(usagePlanId=plan_id)
             ok(f"Deleted usage plan {plan_id}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Usage plan {plan_id} already gone")
+                info(f"Usage plan {plan_id} was already gone")
             else:
-                fail(f"Could not delete usage plan {plan_id}: {e}")
+                fail(f"Couldn't delete usage plan {plan_id}: {e}")
 
     for key_id in api_key_ids:
         try:
@@ -602,9 +739,9 @@ def delete_api_gateway(
             ok(f"Deleted API key {key_id}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"API key {key_id} already gone")
+                info(f"API key {key_id} was already gone")
             else:
-                fail(f"Could not delete API key {key_id}: {e}")
+                fail(f"Couldn't delete API key {key_id}: {e}")
 
     for api_id in api_ids:
         try:
@@ -612,17 +749,17 @@ def delete_api_gateway(
             ok(f"Deleted REST API {api_id}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"REST API {api_id} already gone")
+                info(f"REST API {api_id} was already gone")
             elif e.response["Error"].get("Code") == "TooManyRequestsException":
-                warn("Hit API Gateway rate limit — pausing 30s and retrying.")
+                warn("Hit the API Gateway rate limit — pausing 30s and retrying.")
                 time.sleep(30)
                 try:
                     apigw.delete_rest_api(restApiId=api_id)
                     ok(f"Deleted REST API {api_id}")
                 except ClientError as e2:
-                    fail(f"Could not delete REST API {api_id}: {e2}")
+                    fail(f"Couldn't delete REST API {api_id}: {e2}")
             else:
-                fail(f"Could not delete REST API {api_id}: {e}")
+                fail(f"Couldn't delete REST API {api_id}: {e}")
 
 
 def delete_dynamodb(clients: dict, names: list[str]) -> None:
@@ -636,9 +773,9 @@ def delete_dynamodb(clients: dict, names: list[str]) -> None:
             step(f"Deleting table {name} …")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Table {name} already gone")
+                info(f"Table {name} was already gone")
                 continue
-            fail(f"Could not delete {name}: {e}")
+            fail(f"Couldn't delete {name}: {e}")
             continue
         waiter = ddb.get_waiter("table_not_exists")
         try:
@@ -665,9 +802,9 @@ def delete_secrets(clients: dict, names: list[str], force: bool) -> None:
             ok(f"{verb} {name}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Secret {name} already gone")
+                info(f"Secret {name} was already gone")
             else:
-                fail(f"Could not delete secret {name}: {e}")
+                fail(f"Couldn't delete secret {name}: {e}")
 
 
 def delete_s3_buckets(clients: dict, buckets: list[str]) -> None:
@@ -693,9 +830,9 @@ def delete_s3_buckets(clients: dict, buckets: list[str]) -> None:
             ok(f"Deleted bucket {bucket_name}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Bucket {bucket_name} already gone")
+                info(f"Bucket {bucket_name} was already gone")
             else:
-                fail(f"Could not delete bucket {bucket_name}: {e}")
+                fail(f"Couldn't delete bucket {bucket_name}: {e}")
 
 
 def delete_iam_roles(clients: dict, roles: list[str]) -> None:
@@ -709,13 +846,13 @@ def delete_iam_roles(clients: dict, roles: list[str]) -> None:
                 iam.detach_role_policy(RoleName=role, PolicyArn=p["PolicyArn"])
         except ClientError as e:
             if not _is_not_found(e):
-                warn(f"Could not list managed policies on {role}: {e}")
+                warn(f"Couldn't list managed policies on {role}: {e}")
         try:
             for pname in iam.list_role_policies(RoleName=role).get("PolicyNames", []):
                 iam.delete_role_policy(RoleName=role, PolicyName=pname)
         except ClientError as e:
             if not _is_not_found(e):
-                warn(f"Could not list inline policies on {role}: {e}")
+                warn(f"Couldn't list inline policies on {role}: {e}")
         try:
             for ip in iam.list_instance_profiles_for_role(RoleName=role).get(
                 "InstanceProfiles", []
@@ -725,15 +862,15 @@ def delete_iam_roles(clients: dict, roles: list[str]) -> None:
                 )
         except ClientError as e:
             if not _is_not_found(e):
-                warn(f"Could not list instance profiles for {role}: {e}")
+                warn(f"Couldn't list instance profiles for {role}: {e}")
         try:
             iam.delete_role(RoleName=role)
             ok(f"Deleted role {role}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"Role {role} already gone")
+                info(f"Role {role} was already gone")
             else:
-                fail(f"Could not delete role {role}: {e}")
+                fail(f"Couldn't delete role {role}: {e}")
 
 
 def delete_amplify_apps(clients: dict, app_ids: list[str]) -> None:
@@ -751,9 +888,9 @@ def delete_amplify_apps(clients: dict, app_ids: list[str]) -> None:
             # elsewhere).
             code = e.response["Error"].get("Code", "")
             if _is_not_found(e) or code == "BadRequestException":
-                info(f"Amplify app {app_id} already gone")
+                info(f"Amplify app {app_id} was already gone")
             else:
-                fail(f"Could not delete Amplify app {app_id}: {e}")
+                fail(f"Couldn't delete Amplify app {app_id}: {e}")
 
 
 def delete_log_groups(clients: dict, groups: list[str]) -> None:
@@ -767,9 +904,9 @@ def delete_log_groups(clients: dict, groups: list[str]) -> None:
             ok(f"Deleted {name}")
         except ClientError as e:
             if _is_not_found(e):
-                info(f"{name} already gone")
+                info(f"{name} was already gone")
             else:
-                warn(f"Could not delete {name}: {e}")
+                warn(f"Couldn't delete {name}: {e}")
 
 
 def delete_state_file() -> None:
@@ -820,7 +957,20 @@ def main() -> None:
             "and --region (or AWS_REGION)."
         ),
     )
+    parser.add_argument(
+        "--environment",
+        choices=list(ENVIRONMENT_CHOICES),
+        default=DEFAULT_ENVIRONMENT,
+        help=(
+            "Environment to tear down. Discovery is scoped to resources tagged "
+            "`project=groundskeeper` AND `environment=<env>`, so a dev teardown "
+            "can't take out prod resources (and vice versa). Legacy resources "
+            "without an `environment` tag are still included — they'll be "
+            "retagged on the next deploy."
+        ),
+    )
     args = parser.parse_args()
+    environment: str = args.environment
 
     if args.non_interactive and not args.account:
         sys.stderr.write(
@@ -831,7 +981,9 @@ def main() -> None:
 
     banner(
         f"{PROJECT_NAME} Teardown",
-        "Reads .groundskeeper-deploy-state.json and removes every resource it created.",
+        f"Environment: [bold]{environment}[/bold] — reads "
+        ".groundskeeper-deploy-state.json and removes every resource tagged for "
+        "this environment.",
     )
 
     state = load_state()
@@ -843,7 +995,7 @@ def main() -> None:
     )
 
     clients = make_clients(region)
-    inventory = discover(clients, state, account, region)
+    inventory = discover(clients, state, account, region, environment)
 
     total = sum(len(v) for v in inventory.values())
     if total == 0:
@@ -861,7 +1013,7 @@ def main() -> None:
     if not args.yes and not args.non_interactive:
         console.print()
         if not questionary.confirm(
-            f"Delete all {total} resource(s) listed above? This cannot be undone.",
+            f"Delete all {total} resource(s) above? This can't be undone.",
             default=False,
         ).ask():
             console.print("[dim]Aborted.[/dim]")
@@ -914,7 +1066,7 @@ if __name__ == "__main__":
     except ClientError as e:
         console.print()
         fail(
-            f"AWS error: {e.response['Error'].get('Code', '?')} — "
+            f"AWS returned an error: {e.response['Error'].get('Code', '?')} — "
             f"{e.response['Error'].get('Message', e)}"
         )
         sys.exit(1)

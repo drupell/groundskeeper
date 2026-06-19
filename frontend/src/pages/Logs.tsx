@@ -12,21 +12,23 @@ export function LogsPage() {
   return (
     <div className="px-8 py-10">
       <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">Logs</h1>
-        <p className="mt-1 text-sm text-slate-400">Most recent executor activity, newest first.</p>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">Logs</h1>
+        <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          A running record of recent commits — newest first.
+        </p>
       </header>
 
       {error && (
-        <div className="mb-6 rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+        <div className="mb-6 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
           {error}
         </div>
       )}
 
       {loading && logs.length === 0 ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-[var(--color-fg-muted)]">One moment…</div>
       ) : logs.length === 0 ? (
-        <div className="rounded-xl border border-slate-800 bg-slate-950 p-10 text-center text-sm text-slate-500">
-          No commits yet.
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-10 text-center text-sm text-[var(--color-fg-muted)]">
+          Nothing here yet. Once we make a commit, it'll show up on this page.
         </div>
       ) : (
         <div className="space-y-3">
@@ -37,8 +39,8 @@ export function LogsPage() {
               <article
                 key={idx}
                 className={cn(
-                  'rounded-lg border bg-slate-950 px-4 py-3',
-                  isOk ? 'border-slate-800' : 'border-amber-900/40 bg-amber-950/10',
+                  'rounded-lg border bg-[var(--color-surface-elevated)] px-4 py-3',
+                  isOk ? 'border-[var(--color-border)]' : 'border-amber-900/40 bg-amber-950/10',
                 )}
               >
                 <header className="mb-1.5 flex items-center justify-between gap-3">
@@ -49,30 +51,34 @@ export function LogsPage() {
                         isOk ? 'bg-emerald-400' : 'bg-amber-400',
                       )}
                     />
-                    <span className="font-medium text-slate-200">
+                    <span className="font-medium text-[var(--color-fg)]">
                       {isOk
                         ? log.type === 'destructive'
-                          ? 'Destructive edit'
+                          ? 'Maintenance edit'
                           : 'Creative edit'
-                        : 'Failure'}
+                        : 'Something went wrong'}
                     </span>
                   </div>
                   {when && (
-                    <span className="text-xs text-slate-500 tabular-nums">
+                    <span className="text-xs text-[var(--color-fg-muted)] tabular-nums">
                       {new Date(when).toLocaleString()}
                     </span>
                   )}
                 </header>
                 {isOk ? (
-                  <div className="space-y-1 text-sm text-slate-300">
-                    {log.path && <div className="font-mono text-xs text-slate-400">{log.path}</div>}
+                  <div className="space-y-1 text-sm text-[var(--color-fg)]">
+                    {log.path && (
+                      <div className="font-mono text-xs text-[var(--color-fg-muted)]">
+                        {log.path}
+                      </div>
+                    )}
                     {log.message && <div>{log.message}</div>}
                     {log.commit_url && (
                       <a
                         href={log.commit_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-block text-xs text-sky-400 hover:text-sky-300"
+                        className="inline-block text-xs text-[var(--color-brand)] hover:text-[var(--color-brand-hover)]"
                       >
                         View on GitHub →
                       </a>
@@ -80,8 +86,10 @@ export function LogsPage() {
                   </div>
                 ) : (
                   <div className="text-sm">
-                    <div className="text-amber-300">{log.code ?? 'error'}</div>
-                    {log.message && <div className="mt-0.5 text-slate-300">{log.message}</div>}
+                    <div className="text-amber-300">{log.code ?? 'Unknown error'}</div>
+                    {log.message && (
+                      <div className="mt-0.5 text-[var(--color-fg)]">{log.message}</div>
+                    )}
                   </div>
                 )}
               </article>
@@ -92,9 +100,9 @@ export function LogsPage() {
             <button
               type="button"
               onClick={() => setLimit((l) => l + PAGE)}
-              className="w-full rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-900"
+              className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-4 py-2 text-sm text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-elevated)]"
             >
-              Load more
+              Show more
             </button>
           )}
         </div>

@@ -36,9 +36,9 @@ export function GitHubPage() {
   return (
     <div className="px-8 py-10">
       <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-white">GitHub</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Connect your Personal Access Token, then point Groundskeeper at one repo you own.
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-fg)]">GitHub</h1>
+        <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          Connect your Personal Access Token, then point Groundskeeper at a repo you own.
         </p>
       </header>
 
@@ -74,7 +74,7 @@ function PatCard() {
   const verify = async () => {
     const t = token.trim()
     if (!t) {
-      setStage({ kind: 'error', message: 'Paste a token first.' })
+      setStage({ kind: 'error', message: 'Paste a token first, then we can verify it.' })
       return
     }
     setStage({ kind: 'verifying' })
@@ -82,7 +82,13 @@ function PatCard() {
       const user = await apiClient.verifyGithubToken(t)
       setStage({ kind: 'preview', user })
     } catch (e) {
-      setStage({ kind: 'error', message: e instanceof Error ? e.message : 'Verification failed.' })
+      setStage({
+        kind: 'error',
+        message:
+          e instanceof Error
+            ? e.message
+            : "Couldn't verify that token — double-check it and try again.",
+      })
     }
   }
 
@@ -94,7 +100,10 @@ function PatCard() {
       setStage({ kind: 'idle' })
       await refreshAll()
     } catch (e) {
-      setStage({ kind: 'error', message: e instanceof Error ? e.message : 'Save failed.' })
+      setStage({
+        kind: 'error',
+        message: e instanceof Error ? e.message : "Couldn't save the token — give it another go.",
+      })
     }
   }
 
@@ -109,7 +118,10 @@ function PatCard() {
       setStage({ kind: 'idle' })
       await refreshAll()
     } catch (e) {
-      setStage({ kind: 'error', message: e instanceof Error ? e.message : 'Disconnect failed.' })
+      setStage({
+        kind: 'error',
+        message: e instanceof Error ? e.message : "Couldn't disconnect — try again in a moment.",
+      })
     }
   }
 
@@ -140,17 +152,17 @@ function PatCard() {
       )}
 
       <CardFooter>
-        Generate at{' '}
+        Don't have one? Generate it at{' '}
         <a
           href="https://github.com/settings/tokens/new"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-0.5 text-sky-400 hover:text-sky-300"
+          className="inline-flex items-center gap-0.5 text-[var(--color-brand)] hover:text-[var(--color-brand-hover)]"
         >
           github.com/settings/tokens/new
           <ExternalLink size={11} />
         </a>{' '}
-        and check the <code className="font-mono text-slate-400">repo</code> scope.
+        and tick the <code className="font-mono text-[var(--color-fg)]">repo</code> scope.
       </CardFooter>
     </Card>
   )
@@ -169,15 +181,15 @@ function InputBody({
 }) {
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-400">
-        Paste your token below. We'll verify it with GitHub before saving anything.
+      <p className="text-sm text-[var(--color-fg-muted)]">
+        Paste your token below — we'll check it with GitHub before saving anything.
       </p>
       <input
         type="password"
         value={token}
         onChange={(e) => setToken(e.target.value)}
         placeholder="ghp_…"
-        className="w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+        className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !busy && token.trim()) onVerify()
         }}
@@ -186,7 +198,7 @@ function InputBody({
         type="button"
         onClick={onVerify}
         disabled={busy || !token.trim()}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-[var(--color-ink)] px-3 py-2 text-sm font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
       >
         {busy && <Loader size={14} className="animate-spin" />}
         Verify token
@@ -206,7 +218,7 @@ function PreviewBody({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-4">
         <UserRow user={user} />
         <ScopeRow scopes={user.scopes ?? []} sufficient={user.sufficient} />
       </div>
@@ -215,8 +227,8 @@ function PreviewBody({
         <Banner kind="warning">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
           <span>
-            This token is missing the <code className="font-mono">repo</code> scope. Regenerate with
-            the right checkbox selected before saving.
+            This token's missing the <code className="font-mono">repo</code> scope. Regenerate it
+            with that box ticked before saving.
           </span>
         </Banner>
       )}
@@ -226,14 +238,14 @@ function PreviewBody({
           type="button"
           onClick={onSave}
           disabled={user.sufficient === false}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-[var(--color-ink)] px-3 py-2 text-sm font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
-          Save this token
+          Save token
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-slate-800 px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-900"
+          className="rounded-md border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)]"
         >
           Cancel
         </button>
@@ -253,7 +265,7 @@ function ConnectedBody({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-4">
         <UserRow user={status} />
         <ScopeRow scopes={status.scopes ?? []} sufficient={status.sufficient} />
       </div>
@@ -262,14 +274,14 @@ function ConnectedBody({
         <button
           type="button"
           onClick={onRefresh}
-          className="inline-flex items-center gap-1.5 text-xs text-slate-400 transition-colors hover:text-slate-200"
+          className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)] transition-colors hover:text-[var(--color-fg)]"
         >
           <RefreshCw size={12} /> Refresh
         </button>
         <button
           type="button"
           onClick={onDisconnect}
-          className="inline-flex items-center gap-1.5 rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:border-red-900/60 hover:bg-red-950/30 hover:text-red-200"
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:border-rose-900/60 hover:bg-rose-950/30 hover:text-rose-200"
         >
           <Trash2 size={12} /> Disconnect
         </button>
@@ -285,21 +297,23 @@ function UserRow({ user }: { user: GitHubStatus }) {
         <img
           src={user.avatar_url}
           alt=""
-          className="h-12 w-12 rounded-full border border-slate-700 bg-slate-800"
+          className="h-12 w-12 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-elevated)]"
         />
       ) : (
-        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-500">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-surface-elevated)] text-[var(--color-fg-muted)]">
           <GithubMark size={20} />
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-slate-100">
-          {user.name ?? user.login ?? 'Unknown user'}
+        <p className="truncate text-sm font-medium text-[var(--color-fg)]">
+          {user.name ?? user.login ?? 'Name unavailable'}
         </p>
         {user.login && user.name && user.login !== user.name && (
-          <p className="truncate text-xs text-slate-500">@{user.login}</p>
+          <p className="truncate text-xs text-[var(--color-fg-muted)]">@{user.login}</p>
         )}
-        {user.email && <p className="truncate text-xs text-slate-500">{user.email}</p>}
+        {user.email && (
+          <p className="truncate text-xs text-[var(--color-fg-muted)]">{user.email}</p>
+        )}
       </div>
     </div>
   )
@@ -308,10 +322,10 @@ function UserRow({ user }: { user: GitHubStatus }) {
 function ScopeRow({ scopes, sufficient }: { scopes: string[]; sufficient?: boolean }) {
   const hasRepo = scopes.includes('repo') || scopes.some((s) => s.startsWith('repo:'))
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-800 pt-3">
-      <span className="text-xs tracking-wide text-slate-500 uppercase">Scopes</span>
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-[var(--color-border)] pt-3">
+      <span className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">Scopes</span>
       {scopes.length === 0 ? (
-        <span className="text-xs text-slate-600">(none reported)</span>
+        <span className="text-xs text-[var(--color-fg-dim)]">none reported</span>
       ) : (
         scopes.map((scope) => {
           const isRepo = scope === 'repo' || scope.startsWith('repo:')
@@ -322,7 +336,7 @@ function ScopeRow({ scopes, sufficient }: { scopes: string[]; sufficient?: boole
                 'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px]',
                 isRepo
                   ? 'border-emerald-900/40 bg-emerald-950/30 text-emerald-300'
-                  : 'border-slate-800 bg-slate-900 text-slate-400',
+                  : 'border-[var(--color-border)] bg-[var(--color-surface-elevated)] text-[var(--color-fg-muted)]',
               )}
             >
               {isRepo && <Check size={10} />} {scope}
@@ -342,8 +356,8 @@ function ScopeRow({ scopes, sufficient }: { scopes: string[]; sufficient?: boole
 function ConnectionBadge({ loading, connected }: { loading: boolean; connected: boolean }) {
   if (loading) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-        <Loader size={12} className="animate-spin" /> Checking…
+      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
+        <Loader size={12} className="animate-spin" /> Checking with GitHub…
       </span>
     )
   }
@@ -355,7 +369,7 @@ function ConnectionBadge({ loading, connected }: { loading: boolean; connected: 
     )
   }
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900 px-2 py-0.5 text-xs text-slate-400">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-2 py-0.5 text-xs text-[var(--color-fg-muted)]">
       Not connected
     </span>
   )
@@ -387,7 +401,7 @@ function RepoCard() {
   const connect = async () => {
     const u = repoUrl.trim()
     if (!u) {
-      setErr('Paste a repo URL or owner/repo.')
+      setErr("Paste a repo URL — or just owner/repo if that's easier.")
       return
     }
     setBusy(true)
@@ -404,7 +418,9 @@ function RepoCard() {
         refetchRepo(),
       ])
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Failed.')
+      setErr(
+        e instanceof Error ? e.message : "Couldn't connect that repo. Check the URL and try again.",
+      )
     } finally {
       setBusy(false)
     }
@@ -414,14 +430,16 @@ function RepoCard() {
     <Card>
       <CardHeader title="Repository" icon={<GitBranch size={18} />}>
         {hasRepo && repo?.private && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-900 px-2 py-0.5 text-xs text-slate-400">
+          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-2 py-0.5 text-xs text-[var(--color-fg-muted)]">
             <Lock size={11} /> private
           </span>
         )}
       </CardHeader>
 
       {!isConnected ? (
-        <p className="text-sm text-slate-500">Connect your GitHub PAT above first.</p>
+        <p className="text-sm text-[var(--color-fg-muted)]">
+          Connect your GitHub token above first.
+        </p>
       ) : hasRepo && !editing ? (
         <RepoDisplay
           repo={repo}
@@ -445,7 +463,8 @@ function RepoCard() {
       )}
 
       <CardFooter>
-        Your PAT must have push access. Use a personal repo you don't mind looking automated.
+        Your token needs push access. Pick a personal repo you don't mind looking a little
+        automated.
       </CardFooter>
     </Card>
   )
@@ -478,19 +497,25 @@ function RepoDisplay({
   onChange: () => void
 }) {
   // While the live fetch is in flight, fall back to the persisted name.
-  const fullName = repo?.full_name ?? savedFullName ?? '(unknown)'
+  const fullName = repo?.full_name ?? savedFullName ?? 'unknown repo'
   const canPush = repo?.permissions?.push !== false
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate font-mono text-sm text-slate-100">{fullName}</p>
-            {repo?.description && <p className="mt-1 text-sm text-slate-400">{repo.description}</p>}
-            {!repo && loading && <p className="mt-1 text-xs text-slate-600">Fetching…</p>}
+            <p className="truncate font-mono text-sm text-[var(--color-fg)]">{fullName}</p>
+            {repo?.description && (
+              <p className="mt-1 text-sm text-[var(--color-fg-muted)]">{repo.description}</p>
+            )}
+            {!repo && loading && (
+              <p className="mt-1 text-xs text-[var(--color-fg-dim)]">Fetching repo…</p>
+            )}
             {!repo && error && (
-              <p className="mt-1 text-xs text-amber-400">Couldn't reach GitHub: {error}</p>
+              <p className="mt-1 text-xs text-[var(--color-brand)]">
+                Couldn't reach GitHub: {error}
+              </p>
             )}
           </div>
           {repo?.html_url && (
@@ -498,7 +523,7 @@ function RepoDisplay({
               href={repo.html_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-brand)] hover:text-[var(--color-brand-hover)]"
             >
               Open <ExternalLink size={11} />
             </a>
@@ -506,19 +531,25 @@ function RepoDisplay({
         </div>
 
         {repo && (
-          <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-800 pt-3 text-xs">
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--color-border)] pt-3 text-xs">
             <Pill icon={<GitBranch size={11} />} label={`branch: ${repo.default_branch}`} />
             {!canPush && (
-              <Pill tone="warn" icon={<AlertCircle size={11} />} label="PAT has no push access" />
+              <Pill
+                tone="warn"
+                icon={<AlertCircle size={11} />}
+                label="Token can't push to this repo"
+              />
             )}
           </div>
         )}
 
         {repo?.last_commit && (
-          <div className="mt-3 border-t border-slate-800 pt-3">
-            <p className="text-xs tracking-wide text-slate-500 uppercase">Last commit</p>
-            <p className="mt-1 text-sm text-slate-200">{repo.last_commit.message}</p>
-            <p className="mt-0.5 text-xs text-slate-500">
+          <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+            <p className="text-xs tracking-wide text-[var(--color-fg-muted)] uppercase">
+              Last commit
+            </p>
+            <p className="mt-1 text-sm text-[var(--color-fg)]">{repo.last_commit.message}</p>
+            <p className="mt-0.5 text-xs text-[var(--color-fg-muted)]">
               <span className="font-mono">{repo.last_commit.sha.slice(0, 7)}</span> · by{' '}
               {repo.last_commit.author} ·{' '}
               <time dateTime={repo.last_commit.date}>
@@ -533,7 +564,7 @@ function RepoDisplay({
         <button
           type="button"
           onClick={onChange}
-          className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-900"
+          className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)]"
         >
           Change repository
         </button>
@@ -570,7 +601,7 @@ function RepoEditor({
         value={repoUrl}
         onChange={(e) => setRepoUrl(e.target.value)}
         placeholder="https://github.com/you/your-repo  ·  or  owner/repo"
-        className="w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-700 focus:ring-1 focus:ring-sky-700 focus:outline-none"
+        className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)] focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !busy && repoUrl.trim()) onConnect()
         }}
@@ -580,7 +611,7 @@ function RepoEditor({
           type="button"
           onClick={onConnect}
           disabled={busy || !repoUrl.trim()}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-[var(--color-ink)] px-3 py-2 text-sm font-medium text-[var(--color-ink-fg)] transition-colors hover:bg-[var(--color-ink-hover)] disabled:cursor-not-allowed disabled:bg-[var(--color-border)] disabled:text-[var(--color-fg-dim)]"
         >
           {busy && <Loader size={14} className="animate-spin" />}
           Validate & save
@@ -589,7 +620,7 @@ function RepoEditor({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md border border-slate-800 px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-900"
+            className="rounded-md border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-sunk)]"
           >
             Cancel
           </button>
@@ -614,7 +645,7 @@ function Banner({
     <div
       className={cn(
         'mb-4 flex items-start gap-2 rounded-md border px-3 py-2 text-sm',
-        kind === 'error' && 'border-red-900/40 bg-red-950/20 text-red-200',
+        kind === 'error' && 'border-rose-900/40 bg-rose-950/20 text-rose-200',
         kind === 'warning' && 'border-amber-900/40 bg-amber-950/20 text-amber-200',
         kind === 'success' && 'border-emerald-900/40 bg-emerald-950/20 text-emerald-200',
       )}
@@ -639,7 +670,7 @@ function Pill({
         'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
         tone === 'warn'
           ? 'border-amber-900/40 bg-amber-950/20 text-amber-200'
-          : 'border-slate-800 bg-slate-900 text-slate-400',
+          : 'border-[var(--color-border)] bg-[var(--color-surface-elevated)] text-[var(--color-fg-muted)]',
       )}
     >
       {icon}

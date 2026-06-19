@@ -3,6 +3,7 @@
 // raw query objects so existing pages don't need to change.
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 
 import type {
   Config,
@@ -12,10 +13,21 @@ import type {
   RepoInfo,
   RunRecord,
 } from '@/lib/api'
-import { apiClient } from '@/lib/api'
+import { ApiClientError, apiClient } from '@/lib/api'
 
-const errMsg = (error: unknown): string | null =>
-  error ? (error instanceof Error ? error.message : String(error)) : null
+const errMsg = (error: unknown): string | null => {
+  if (!error) return null
+  if (error instanceof ApiClientError) {
+    if (error.kind === 'network') {
+      return "Can't reach the API — looks like you're offline. Try again in a moment."
+    }
+    if (error.kind === 'parse') {
+      return "The API responded but we couldn't read it. Try again in a moment."
+    }
+    return error.message
+  }
+  return error instanceof Error ? error.message : String(error)
+}
 
 // ---------------------------------------------------------------------------
 // Config — GET + PATCH
@@ -85,6 +97,8 @@ export function useLogs(limit: number) {
     logs: query.data?.items ?? [],
     loading: query.isLoading,
     error: errMsg(query.error),
+    refetch: query.refetch,
+    fetching: query.isFetching,
   }
 }
 
@@ -100,6 +114,8 @@ export function useRuns(limit: number) {
     runs: (query.data?.items ?? []) as RunRecord[],
     loading: query.isLoading,
     error: errMsg(query.error),
+    refetch: query.refetch,
+    fetching: query.isFetching,
   }
 }
 
@@ -129,20 +145,31 @@ export function useVacation() {
 // ---------------------------------------------------------------------------
 export function useTestRun() {
   const qc = useQueryClient()
+  const timers = useRef<number[]>([])
+  useEffect(
+    () => () => {
+      timers.current.forEach(window.clearTimeout)
+      timers.current = []
+    },
+    [],
+  )
+  const schedule = (ms: number, fn: () => void) => {
+    timers.current.push(window.setTimeout(fn, ms))
+  }
   const run = useMutation({
     mutationFn: () => apiClient.testRun(),
     onSuccess: () => {
       // The executor was invoked async; give it a beat, then pull the logs
       // it writes so the result appears without a manual refresh.
       qc.invalidateQueries({ queryKey: ['dashboard-status'] })
-      window.setTimeout(() => {
+      schedule(4_000, () => {
         qc.invalidateQueries({ queryKey: ['logs'] })
         qc.invalidateQueries({ queryKey: ['dashboard-status'] })
-      }, 4_000)
-      window.setTimeout(() => {
+      })
+      schedule(9_000, () => {
         qc.invalidateQueries({ queryKey: ['logs'] })
         qc.invalidateQueries({ queryKey: ['dashboard-status'] })
-      }, 9_000)
+      })
     },
   })
   const plan = useMutation({ mutationFn: () => apiClient.testPlan() })
@@ -155,6 +182,47 @@ export function useTestRun() {
     planning: plan.isPending,
     plan: (plan.data ?? null) as DryRunResult | null,
     planError: errMsg(plan.error),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Run the orchestrator for real, right now — creates schedules + a RUN#.
+// Async on the backend, so the call returns immediately; we re-pull the
+// runs/logs/status queries on a short delay to surface the result.
+// ---------------------------------------------------------------------------
+export function useRunNow() {
+  const qc = useQueryClient()
+  const timers = useRef<number[]>([])
+  useEffect(
+    () => () => {
+      timers.current.forEach(window.clearTimeout)
+      timers.current = []
+    },
+    [],
+  )
+  const schedule = (ms: number, fn: () => void) => {
+    timers.current.push(window.setTimeout(fn, ms))
+  }
+  const mutation = useMutation({
+    mutationFn: () => apiClient.runNow(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dashboard-status'] })
+      schedule(4_000, () => {
+        qc.invalidateQueries({ queryKey: ['runs'] })
+        qc.invalidateQueries({ queryKey: ['logs'] })
+        qc.invalidateQueries({ queryKey: ['dashboard-status'] })
+      })
+      schedule(10_000, () => {
+        qc.invalidateQueries({ queryKey: ['runs'] })
+        qc.invalidateQueries({ queryKey: ['logs'] })
+      })
+    },
+  })
+  return {
+    runScheduler: () => mutation.mutateAsync(),
+    running: mutation.isPending,
+    result: mutation.data ?? null,
+    error: errMsg(mutation.error),
   }
 }
 

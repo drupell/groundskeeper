@@ -56,6 +56,6 @@ def exception(msg: str, exc: BaseException, **fields: Any) -> None:
         msg,
         exc_type=type(exc).__name__,
         exc_message=str(exc),
-        traceback=traceback.format_exc(),
+        traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         **fields,
     )

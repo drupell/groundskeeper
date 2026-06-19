@@ -28,15 +28,26 @@ Endpoints
 import base64
 import json
 import os
+import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import boto3
 from shared import config as cfg
 from shared import ddb, log, secrets
 from shared.amplify import rotate_password
 from shared.errors import BadRequest, GroundskeeperError, NotFound, UpstreamError
-from shared.github import get_last_commit, get_repo, parse_repo_url, verify_token
+from shared.github import (
+    get_last_commit,
+    get_repo,
+    parse_repo_url,
+    verify_token,
+)
+from shared.github import (
+    resolve_current as resolve_current_repo,
+)
 from shared.responses import error_response, no_content, ok
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -87,13 +98,13 @@ def _parse_body(event: dict[str, Any]) -> dict[str, Any]:
         try:
             raw = base64.b64decode(raw).decode()
         except (ValueError, UnicodeDecodeError) as e:
-            raise BadRequest("Body is not valid base64 / UTF-8.") from e
+            raise BadRequest("Request body isn't valid base64 / UTF-8.") from e
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise BadRequest("Request body must be valid JSON.") from e
+        raise BadRequest("Request body needs to be valid JSON.") from e
     if not isinstance(parsed, dict):
-        raise BadRequest("Request body must be a JSON object.")
+        raise BadRequest("Request body needs to be a JSON object.")
     return parsed
 
 
@@ -105,16 +116,16 @@ def _query_int(event: dict[str, Any], key: str, *, default: int, lo: int, hi: in
     try:
         v = int(raw)
     except (TypeError, ValueError) as e:
-        raise BadRequest(f"Query param '{key}' must be an integer.") from e
+        raise BadRequest(f"Query param '{key}' needs to be an integer.") from e
     if not (lo <= v <= hi):
-        raise BadRequest(f"Query param '{key}' must be in [{lo}, {hi}].")
+        raise BadRequest(f"Query param '{key}' needs to be between {lo} and {hi}.")
     return v
 
 
 def _require_pat() -> str:
     token = secrets.get_pat()
     if not token:
-        raise BadRequest("No GitHub PAT is stored. Set one first via PUT /github/pat.")
+        raise BadRequest("No GitHub token saved yet — connect one on the GitHub page first.")
     return token
 
 
@@ -130,7 +141,7 @@ def _strip_keys(item: dict[str, Any]) -> dict[str, Any]:
 def _resolve(method: str, path: str) -> Handler:
     route = _ROUTES.get((method, path))
     if route is None:
-        raise NotFound(f"No route for {method} {path}.")
+        raise NotFound(f"No route matches {method} {path}.")
     return route
 
 
@@ -144,11 +155,27 @@ def _get_config(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str, Any]
 
 
 def _put_config(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    # Repo writes need the push-permission check in _github_set_repo; keep them
+    # out of the generic config path so a forged body can't repoint at someone
+    # else's repo.
+    _reject_repo_in_body(body)
     return ok(cfg.save_config(body))
 
 
 def _patch_config(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    # Same reason as _put_config — repo changes must go through /github/repo.
+    _reject_repo_in_body(body)
     return ok(cfg.merge_patch(body))
+
+
+def _reject_repo_in_body(body: dict[str, Any]) -> None:
+    if "repo" not in body:
+        return
+    repo = body.pop("repo")
+    if repo is not None:
+        raise BadRequest(
+            "Repo can only be set via PUT /github/repo — it needs the push-permission check first."
+        )
 
 
 # GitHub ----------------------------------------------------------------------
@@ -161,7 +188,7 @@ def _github_set_pat(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, A
     token = body.get("token", "")
     user = verify_token(token)
     if not user["sufficient"]:
-        raise BadRequest("PAT is missing the required 'repo' scope.")
+        raise BadRequest("This token is missing the 'repo' scope — we need it to commit.")
     secrets.set_pat(token)
     record = {k: v for k, v in user.items() if not k.startswith("_")}
     ddb.put_item(ddb.user_pk(), ddb.SK_GITHUB, record)
@@ -185,10 +212,24 @@ def _github_get_repo(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str,
     config = cfg.load_config()
     repo_info = config.get("repo")
     if not repo_info or not repo_info.get("owner") or not repo_info.get("name"):
-        raise BadRequest("No repo is configured.")
-    fresh = get_repo(token, repo_info["owner"], repo_info["name"])
-    last = get_last_commit(token, repo_info["owner"], repo_info["name"], fresh["default_branch"])
-    return ok({**fresh, "last_commit": last})
+        raise BadRequest("No repository connected yet — add one on the GitHub page.")
+    canonical, changed = resolve_current_repo(token, repo_info)
+    if changed:
+        log.info(
+            "github.repo_reconciled",
+            from_full=repo_info.get("full_name"),
+            to_full=canonical.get("full_name"),
+            from_id=repo_info.get("id"),
+            to_id=canonical.get("id"),
+        )
+        cfg.merge_patch({"repo": canonical})
+    last = get_last_commit(
+        token, canonical["owner"], canonical["name"], canonical["default_branch"]
+    )
+    # Re-fetch perms via /repos/{owner}/{name} so the dashboard's "push access"
+    # signal stays accurate — get_repo_by_id doesn't return perms in some cases.
+    fresh = get_repo(token, canonical["owner"], canonical["name"])
+    return ok({**canonical, "permissions": fresh.get("permissions", {}), "last_commit": last})
 
 
 def _github_set_repo(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -196,17 +237,20 @@ def _github_set_repo(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, 
     owner, name = parse_repo_url(body.get("url", ""))
     fresh = get_repo(token, owner, name)
     if not fresh["permissions"].get("push"):
-        raise BadRequest("PAT does not have push access to this repository.")
-    last = get_last_commit(token, owner, name, fresh["default_branch"])
+        raise BadRequest("This token can't push to that repo. Use one with write access.")
+    # If the user pasted an out-of-date URL, GitHub silently redirected and
+    # `fresh` already holds the canonical owner/name — use those, not the
+    # ones we parsed.
+    last = get_last_commit(token, fresh["owner"], fresh["name"], fresh["default_branch"])
     saved = {
+        "id": fresh["id"],
         "url": fresh["html_url"],
-        "owner": owner,
-        "name": name,
+        "owner": fresh["owner"],
+        "name": fresh["name"],
         "full_name": fresh["full_name"],
         "default_branch": fresh["default_branch"],
         "description": fresh.get("description"),
         "private": fresh["private"],
-        "repo_id": "default",
     }
     cfg.merge_patch({"repo": saved})
     return ok({**saved, "last_commit": last})
@@ -245,10 +289,10 @@ def _dashboard_status(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str
 # Vacation + password ---------------------------------------------------------
 def _put_vacation(_event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     if "active" not in body or not isinstance(body["active"], bool):
-        raise BadRequest("Field 'active' (boolean) is required.")
+        raise BadRequest("Field 'active' is required and needs to be a boolean.")
     until = body.get("until")
     if until is not None and not isinstance(until, str):
-        raise BadRequest("Field 'until' must be a date string or null.")
+        raise BadRequest("Field 'until' needs to be a date string or null.")
     return ok(cfg.merge_patch({"vacation": {"active": body["active"], "until": until}}))
 
 
@@ -262,13 +306,31 @@ def _test_run(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str, Any]:
     """Fire the executor once, right now — async so we never hit the 29s API
     Gateway timeout. The result lands on the Logs page within seconds."""
     if not _EXECUTOR_NAME:
-        raise UpstreamError("Executor function name is not configured.", code="config_missing")
-    _lambda.invoke(FunctionName=_EXECUTOR_NAME, InvocationType="Event", Payload=b"{}")
-    log.info("api.test_run.triggered", executor=_EXECUTOR_NAME)
+        raise UpstreamError("Executor function name isn't configured.", code="config_missing")
+    # Stamp run_date/scheduled_at so the resulting LOG# row can be matched
+    # against today's plan on the dashboard.
+    config = cfg.load_config()
+    tz_name = config.get("timezone") or "UTC"
+    try:
+        local_tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        local_tz = ZoneInfo("UTC")
+    now_utc = datetime.now(timezone.utc)
+    payload = {
+        "run_date": now_utc.astimezone(local_tz).date().isoformat(),
+        "scheduled_at": now_utc.isoformat(),
+        "schedule_name": f"test-run-{uuid.uuid4().hex[:6]}",
+    }
+    _lambda.invoke(
+        FunctionName=_EXECUTOR_NAME,
+        InvocationType="Event",
+        Payload=json.dumps(payload).encode(),
+    )
+    log.info("api.test_run.triggered", executor=_EXECUTOR_NAME, **payload)
     return ok(
         {
             "status": "triggered",
-            "message": "Executor invoked. Watch the Logs page — the result lands in a few seconds.",
+            "message": "Executor's running. The result lands on the Logs page in a few seconds.",
         }
     )
 
@@ -277,7 +339,7 @@ def _test_plan(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str, Any]:
     """Synchronously run the orchestrator in dry-run mode and return its plan.
     Dry-run does no GitHub/Bedrock work, so it returns well within the timeout."""
     if not _ORCHESTRATOR_NAME:
-        raise UpstreamError("Orchestrator function name is not configured.", code="config_missing")
+        raise UpstreamError("Orchestrator function name isn't configured.", code="config_missing")
     resp = _lambda.invoke(
         FunctionName=_ORCHESTRATOR_NAME,
         InvocationType="RequestResponse",
@@ -285,11 +347,39 @@ def _test_plan(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str, Any]:
     )
     payload = json.loads(resp["Payload"].read() or b"{}")
     if resp.get("FunctionError"):
+        # Lambda invoke error payloads carry errorType/errorMessage/stackTrace
+        # — keep that on the server side, surface a generic message to the UI.
+        log.error(
+            "api.test_plan.dry_run_failed",
+            function_error=resp.get("FunctionError"),
+            payload=payload,
+        )
         raise UpstreamError(
-            f"Orchestrator dry-run failed: {payload}",
+            "Couldn't preview today's plan — the orchestrator hit an unexpected "
+            "error. Check the orchestrator's CloudWatch logs for details.",
             code="dry_run_failed",
         )
     return ok(payload)
+
+
+def _run_now(_event: dict[str, Any], _body: dict[str, Any]) -> dict[str, Any]:
+    """Fire the orchestrator for real (not dry-run), right now. Creates the
+    actual EventBridge Scheduler one-time rules + a RUN# record. Async so the
+    HTTP call returns quickly; the dashboard polls for RUN#/logs to show
+    progress."""
+    if not _ORCHESTRATOR_NAME:
+        raise UpstreamError("Orchestrator function name isn't configured.", code="config_missing")
+    _lambda.invoke(FunctionName=_ORCHESTRATOR_NAME, InvocationType="Event", Payload=b"{}")
+    log.info("api.run_now.triggered", orchestrator=_ORCHESTRATOR_NAME)
+    return ok(
+        {
+            "status": "triggered",
+            "message": (
+                "Got it — today's run is firing up. Schedules and a fresh entry will "
+                "appear in the Today's plan card within a few seconds."
+            ),
+        }
+    )
 
 
 _ROUTES: dict[tuple[str, str], Handler] = {
@@ -310,4 +400,5 @@ _ROUTES: dict[tuple[str, str], Handler] = {
     ("POST", "/password"): _rotate_password,
     ("POST", "/test/run"): _test_run,
     ("POST", "/test/plan"): _test_plan,
+    ("POST", "/run/now"): _run_now,
 }
