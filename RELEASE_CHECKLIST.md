@@ -42,7 +42,7 @@ One-time checklist for the maintainer to walk through **before** pushing the pub
 
 - [ ] `README.md` renders cleanly on GitHub (use the GitHub web "Preview" before pushing, or `gh repo view --web` against a private staging fork)
 - [ ] `ARCHITECTURE.md` links resolve (TODO: confirm file exists; if not, either create it or remove from checklist)
-- [ ] `LICENSE` present, MIT, correct year (2026) and name (Dave Drupell — TODO: confirm exact name to use)
+- [ ] `LICENSE` present, MIT, correct year (2026) and name (Dave Rupell)
 - [ ] `CONTRIBUTING.md` present (TODO: confirm file exists or create stub before release)
 - [ ] No TODO/FIXME comments that reference internal-only context: `git grep -nE 'TODO|FIXME|XXX|HACK'` reviewed line-by-line
 
