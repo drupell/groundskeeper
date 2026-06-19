@@ -1228,16 +1228,19 @@ def _ensure_any_method(apigw, api_id: str, resource_id: str, *, with_proxy_param
     field is updated. So when we hit the conflict we patch the existing
     method to match what we'd have created.
     """
-    request_params = {"method.request.path.proxy": True} if with_proxy_param else None
+    put_kwargs: dict = {
+        "restApiId": api_id,
+        "resourceId": resource_id,
+        "httpMethod": "ANY",
+        "authorizationType": "NONE",
+        "apiKeyRequired": False,
+    }
+    if with_proxy_param:
+        # boto3 rejects requestParameters=None outright, so only include
+        # the key when we actually have something to send.
+        put_kwargs["requestParameters"] = {"method.request.path.proxy": True}
     try:
-        apigw.put_method(
-            restApiId=api_id,
-            resourceId=resource_id,
-            httpMethod="ANY",
-            authorizationType="NONE",
-            apiKeyRequired=False,
-            requestParameters=request_params,
-        )
+        apigw.put_method(**put_kwargs)
         return
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConflictException":
