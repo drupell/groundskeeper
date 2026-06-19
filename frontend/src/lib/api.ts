@@ -1,6 +1,7 @@
-// API client. Singleton instantiated from build-time env vars written by
+// API client. Singleton instantiated from a build-time env var written by
 // deploy.py into frontend/.env.production. The whole dashboard sits behind
-// Amplify basic auth, so the API key in the JS bundle is acceptable.
+// Amplify basic auth, which is the single gate on every endpoint — no
+// per-request API key on top.
 
 export interface ApiError {
   error: string
@@ -132,14 +133,10 @@ export class ApiClientError extends Error {
 }
 
 class ApiClient {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey: string,
-  ) {}
+  constructor(private readonly baseUrl: string) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' }
-    if (this.apiKey) headers['x-api-key'] = this.apiKey
     if (body !== undefined) headers['Content-Type'] = 'application/json'
 
     let res: Response
@@ -225,9 +222,8 @@ class ApiClient {
 }
 
 const baseUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
-const apiKey = (import.meta.env.VITE_API_KEY as string | undefined) ?? ''
 
-export const apiClient = new ApiClient(baseUrl, apiKey)
+export const apiClient = new ApiClient(baseUrl)
 
 /** Kept for backwards-compat with any callers still importing `useApi`. */
 export function useApi() {

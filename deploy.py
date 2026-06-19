@@ -455,7 +455,7 @@ def show_deployment_plan(
         (
             "API Gateway",
             API_GATEWAY_NAME,
-            "REST API with an API key and usage plan. The key gets baked into the dashboard at build time.",
+            "REST API the dashboard calls. Open at the API Gateway layer; Amplify basic auth is the single gate.",
         ),
         (
             "EventBridge",
@@ -1104,7 +1104,7 @@ def _ensure_lambda_permission(
 # ---------------------------------------------------------------------------
 def ensure_api_gateway(
     clients: dict, account: str, region: str, environment: str, state: dict
-) -> tuple[str, str]:
+) -> str:
     section("API Gateway")
     apigw = clients["apigw"]
     lc = clients["lambda"]
@@ -1168,7 +1168,7 @@ def ensure_api_gateway(
             resourceId=proxy_id,
             httpMethod="ANY",
             authorizationType="NONE",
-            apiKeyRequired=True,
+            apiKeyRequired=False,
             requestParameters={"method.request.path.proxy": True},
         )
     except ClientError as e:
@@ -1193,7 +1193,7 @@ def ensure_api_gateway(
             resourceId=root_id,
             httpMethod="ANY",
             authorizationType="NONE",
-            apiKeyRequired=True,
+            apiKeyRequired=False,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConflictException":
@@ -1221,8 +1221,10 @@ def ensure_api_gateway(
     apigw.create_deployment(restApiId=api_id, stageName=API_STAGE)
     step(f"Deployed stage '{API_STAGE}'")
 
-    # API key + usage plan
-    api_key_value = _ensure_api_key_and_usage_plan(apigw, api_id, region, environment, state)
+    # Earlier versions gated every method on a per-request API key + a usage
+    # plan; the dashboard is now protected solely by Amplify basic auth, so
+    # the key is just a paper trail. Delete any legacy key/plan in place.
+    _cleanup_legacy_api_key_and_usage_plan(apigw, region, state)
 
     url = f"https://{api_id}.execute-api.{region}.amazonaws.com/{API_STAGE}"
     state.setdefault("api_gateway", {})
@@ -1230,7 +1232,7 @@ def ensure_api_gateway(
     state["api_gateway"]["url"] = url
     save_state(state)
     ok(f"API URL is {url}")
-    return url, api_key_value
+    return url
 
 
 CORS_ALLOW_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
@@ -1288,101 +1290,77 @@ def _put_cors_mock(apigw, api_id: str, resource_id: str) -> None:
     )
 
 
-def _ensure_api_key_and_usage_plan(
-    apigw, api_id: str, region: str, environment: str, state: dict
-) -> str:
-    desired_tags = tag_map(environment)
-    # API key
-    existing_key = None
-    pos = None
-    while True:
-        kwargs = {"includeValues": True, "limit": 500}
-        if pos:
-            kwargs["position"] = pos
-        resp = apigw.get_api_keys(**kwargs)
-        for k in resp.get("items", []):
-            if k["name"] == API_KEY_NAME:
-                existing_key = k
-                break
-        if existing_key or "position" not in resp:
-            break
-        pos = resp["position"]
-    if existing_key:
-        key_id, key_value = existing_key["id"], existing_key["value"]
-        step(f"Reusing API key {API_KEY_NAME}")
-        # Retag — covers legacy keys that pre-date `environment`.
-        try:
-            apigw.tag_resource(
-                resourceArn=f"arn:aws:apigateway:{region}::/apikeys/{key_id}",
-                tags=desired_tags,
-            )
-        except ClientError as e:
-            warn(f"Couldn't retag API key {key_id}: {e.response['Error'].get('Code', '?')}")
-    else:
-        created = apigw.create_api_key(
-            name=API_KEY_NAME,
-            enabled=True,
-            tags=desired_tags,
-        )
-        key_id, key_value = created["id"], created["value"]
-        step(f"Created API key {API_KEY_NAME}")
+def _cleanup_legacy_api_key_and_usage_plan(apigw, region: str, state: dict) -> None:
+    """Idempotently remove the legacy per-request API key + usage plan.
 
-    # Usage plan
-    plan_id = None
-    pos = None
-    while True:
-        kwargs = {"limit": 500}
-        if pos:
-            kwargs["position"] = pos
-        resp = apigw.get_usage_plans(**kwargs)
-        for p in resp.get("items", []):
-            if p["name"] == USAGE_PLAN_NAME:
-                plan_id = p["id"]
-                break
-        if plan_id or "position" not in resp:
-            break
-        pos = resp["position"]
-    if not plan_id:
-        plan = apigw.create_usage_plan(
-            name=USAGE_PLAN_NAME,
-            apiStages=[{"apiId": api_id, "stage": API_STAGE}],
-            throttle={"burstLimit": 20, "rateLimit": 10.0},
-            tags=desired_tags,
-        )
-        plan_id = plan["id"]
-        step(f"Created usage plan {USAGE_PLAN_NAME}")
-    else:
-        # Retag — covers legacy plans that pre-date `environment`.
+    Earlier deploys created `groundskeeper-api-key` + `groundskeeper-usage-plan`
+    to gate every API Gateway method. The dashboard is now protected only by
+    Amplify basic auth, so neither resource is needed. This function deletes
+    them if they exist; on a fresh deploy there's nothing to clean up.
+    """
+    # Find the usage plan first so we can detach the API key from it before
+    # deleting either side. Both lookups are paged.
+    plan_id = _find_apigw_resource(apigw.get_usage_plans, USAGE_PLAN_NAME)
+    key_id = _find_apigw_resource(apigw.get_api_keys, API_KEY_NAME)
+
+    if plan_id and key_id:
         try:
-            apigw.tag_resource(
-                resourceArn=f"arn:aws:apigateway:{region}::/usageplans/{plan_id}",
-                tags=desired_tags,
-            )
+            apigw.delete_usage_plan_key(usagePlanId=plan_id, keyId=key_id)
         except ClientError as e:
-            warn(f"Couldn't retag usage plan {plan_id}: {e.response['Error'].get('Code', '?')}")
-        try:
-            apigw.update_usage_plan(
-                usagePlanId=plan_id,
-                patchOperations=[
-                    {"op": "add", "path": "/apiStages", "value": f"{api_id}:{API_STAGE}"},
-                ],
-            )
-        except ClientError as e:
-            # Already attached
-            if e.response["Error"]["Code"] not in ("ConflictException", "BadRequestException"):
+            if e.response["Error"]["Code"] != "NotFoundException":
                 raise
 
-    try:
-        apigw.create_usage_plan_key(usagePlanId=plan_id, keyId=key_id, keyType="API_KEY")
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConflictException":
-            raise
+    if plan_id:
+        # Detach all api stages before deleting; AWS rejects delete_usage_plan
+        # otherwise.
+        try:
+            plan = apigw.get_usage_plan(usagePlanId=plan_id)
+            for stage in plan.get("apiStages", []):
+                apigw.update_usage_plan(
+                    usagePlanId=plan_id,
+                    patchOperations=[
+                        {
+                            "op": "remove",
+                            "path": "/apiStages",
+                            "value": f"{stage['apiId']}:{stage['stage']}",
+                        },
+                    ],
+                )
+            apigw.delete_usage_plan(usagePlanId=plan_id)
+            step(f"Removed legacy usage plan {USAGE_PLAN_NAME}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NotFoundException":
+                raise
 
-    state.setdefault("api_gateway", {})
-    state["api_gateway"]["api_key_id"] = key_id
-    state["api_gateway"]["usage_plan_id"] = plan_id
+    if key_id:
+        try:
+            apigw.delete_api_key(apiKey=key_id)
+            step(f"Removed legacy API key {API_KEY_NAME}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NotFoundException":
+                raise
+
+    # Drop the legacy ids from the state file so teardown.py doesn't chase them.
+    gw_state = state.get("api_gateway", {})
+    gw_state.pop("api_key_id", None)
+    gw_state.pop("usage_plan_id", None)
     save_state(state)
-    return key_value
+
+
+def _find_apigw_resource(list_fn, target_name: str) -> str | None:
+    """Page through an API Gateway list_* call and return the id by name."""
+    pos = None
+    while True:
+        kwargs: dict = {"limit": 500}
+        if pos:
+            kwargs["position"] = pos
+        resp = list_fn(**kwargs)
+        for item in resp.get("items", []):
+            if item["name"] == target_name:
+                return item["id"]
+        pos = resp.get("position")
+        if not pos:
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -1474,7 +1452,7 @@ def prompt_dashboard_password(state: dict, non_interactive: bool = False) -> str
         return p1
 
 
-def build_frontend(api_url: str, api_key: str, region: str) -> Path | None:
+def build_frontend(api_url: str, region: str) -> Path | None:
     if not (FRONTEND_DIR / "package.json").exists():
         warn("Frontend isn't here yet — skipping the build.")
         return None
@@ -1485,14 +1463,7 @@ def build_frontend(api_url: str, api_key: str, region: str) -> Path | None:
         return None
 
     env_file = FRONTEND_DIR / ".env.production"
-    # The API key gets baked into the JS bundle Vite builds from this file.
-    # That's accepted because the whole dashboard sits behind Amplify basic
-    # auth (single-user, by design — see frontend/src/lib/api.ts). The .env
-    # file itself is gitignored. CodeQL's py/clear-text-storage-sensitive-data
-    # rule flags this as a false positive given the basic-auth context.
-    env_file.write_text(
-        f"VITE_API_URL={api_url}\nVITE_API_KEY={api_key}\nVITE_AWS_REGION={region}\n"
-    )
+    env_file.write_text(f"VITE_API_URL={api_url}\nVITE_AWS_REGION={region}\n")
     step("Wrote frontend/.env.production")
 
     with Progress(
@@ -2049,13 +2020,13 @@ def main() -> None:
     ensure_secrets(clients, environment, state)
     bucket = ensure_artifacts_bucket(clients, account, region, environment, state)
     ensure_lambdas(clients, account, region, environment, state, bucket)
-    api_url, api_key = ensure_api_gateway(clients, account, region, environment, state)
+    api_url = ensure_api_gateway(clients, account, region, environment, state)
     ensure_orchestrator_schedule(clients, account, region, environment, state)
 
     dashboard_url = None
     if not args.skip_frontend:
         password = prompt_dashboard_password(state, non_interactive=args.non_interactive)
-        dist = build_frontend(api_url, api_key, region)
+        dist = build_frontend(api_url, region)
         dashboard_url = ensure_amplify(clients, region, environment, state, dist, password)
         # Now that the Amplify app id is known, tighten amplify:UpdateApp from
         # apps/* down to this single app's ARN.
