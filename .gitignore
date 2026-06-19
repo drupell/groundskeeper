@@ -49,6 +49,3 @@ Thumbs.db
 *.pem
 *.key
 credentials.json
-
-# Memory + AI scratch
-.claude/
