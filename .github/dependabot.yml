@@ -1,38 +1,56 @@
+# Dependabot configuration.
+#
+# Goals:
+# - One PR per ecosystem per week, batching every minor+patch bump across
+#   direct dependencies and any security advisories together. Major bumps
+#   keep their own PR because they often need coordinated change.
+# - All PRs target dev so they graduate to main through the normal pipeline.
+# - applies-to is intentionally omitted on the catch-all groups so they
+#   cover both version-updates AND security-updates (the default).
+
 version: 2
 updates:
+  # Python — backend Lambdas, deploy.py, teardown.py, tests.
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     allow:
       - dependency-type: "direct"
     groups:
-      security-updates:
-        applies-to: security-updates
-        patterns:
-          - "*"
+      python:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      python-major:
+        patterns: ["*"]
+        update-types: ["major"]
 
+  # Frontend — React + Vite + dashboard chrome.
   - package-ecosystem: "npm"
     directory: "/frontend"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     allow:
       - dependency-type: "direct"
     groups:
-      security-updates:
-        applies-to: security-updates
-        patterns:
-          - "*"
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      npm-major:
+        patterns: ["*"]
+        update-types: ["major"]
 
+  # GitHub Actions versions in .github/workflows/*.yml.
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     groups:
-      security-updates:
-        applies-to: security-updates
-        patterns:
-          - "*"
+      actions:
+        patterns: ["*"]
