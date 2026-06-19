@@ -85,14 +85,18 @@ function listTimezones(): string[] {
 
 function TimezoneCard({ timezone }: { timezone: string }) {
   const { updateConfig } = useConfig()
-  const [value, setValue] = useState(timezone)
+  // Pattern A3: track the prop we last reset against so a changing `timezone`
+  // resets the editor during render instead of via a sync useEffect.
+  const [valueState, setValueState] = useState({ key: timezone, value: timezone })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => {
-    setValue(timezone)
-  }, [timezone])
+  if (valueState.key !== timezone) {
+    setValueState({ key: timezone, value: timezone })
+  }
+  const value = valueState.key === timezone ? valueState.value : timezone
+  const setValue = (next: string) => setValueState({ key: timezone, value: next })
 
   const zones = useMemo(() => listTimezones(), [])
   const dirty = value !== timezone
@@ -189,16 +193,22 @@ const GAP_MAX = 480 // 8 hours — longer than any realistic active day
 
 function GapCard({ min, max }: { min: number; max: number }) {
   const { updateConfig } = useConfig()
-  const [lo, setLo] = useState(min)
-  const [hi, setHi] = useState(max)
+  // Pattern A3: bundle the editor state with the (min, max) it was reset against
+  // so changing props reset both sliders during render — no sync useEffect.
+  const [gapState, setGapState] = useState({ keyMin: min, keyMax: max, lo: min, hi: max })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => {
-    setLo(min)
-    setHi(max)
-  }, [min, max])
+  if (gapState.keyMin !== min || gapState.keyMax !== max) {
+    setGapState({ keyMin: min, keyMax: max, lo: min, hi: max })
+  }
+  const lo = gapState.keyMin === min && gapState.keyMax === max ? gapState.lo : min
+  const hi = gapState.keyMin === min && gapState.keyMax === max ? gapState.hi : max
+  const setLo = (next: number) =>
+    setGapState((s) => ({ keyMin: min, keyMax: max, lo: next, hi: s.hi }))
+  const setHi = (next: number) =>
+    setGapState((s) => ({ keyMin: min, keyMax: max, lo: s.lo, hi: next }))
 
   const dirty = lo !== min || hi !== max
   const valid = lo >= 0 && hi <= GAP_MAX && lo <= hi
@@ -437,6 +447,18 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Pattern B: timer-driven boolean replaces a `Date.now()` comparison in render.
+  // The effect responds to the external `savedAt` event by flipping the flag on,
+  // then schedules it back off after the visible window.
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- responding to an external savedAt event (timestamp from parent), not synchronizing derived state. See https://react.dev/learn/you-might-not-need-an-effect#sharing-logic-between-event-handlers
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
@@ -447,7 +469,7 @@ function SaveBadge({
   if (dirty) {
     return <span className="text-xs text-[var(--color-brand)]">Unsaved</span>
   }
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

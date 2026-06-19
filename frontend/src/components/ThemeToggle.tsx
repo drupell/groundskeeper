@@ -1,6 +1,6 @@
 import { Monitor, Moon, Sun } from 'lucide-react'
 
-import { useTheme, type Theme } from '@/lib/theme'
+import { useTheme, type Theme } from '@/lib/useTheme'
 
 const NEXT: Record<Theme, Theme> = {
   light: 'dark',

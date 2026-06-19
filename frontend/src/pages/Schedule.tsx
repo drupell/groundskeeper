@@ -63,16 +63,31 @@ const COUNT_CAP = 20
 
 function RangeCard({ config }: { config: Config }) {
   const { updateConfig } = useConfig()
-  const [minText, setMinText] = useState(String(config.commit_count.min))
-  const [maxText, setMaxText] = useState(String(config.commit_count.max))
+  // Reset-on-change during render: when the saved config.commit_count changes
+  // upstream, we discard local edits and re-seed from the new values. The
+  // "key" fields track which saved snapshot the local text reflects.
+  const [textState, setTextState] = useState({
+    key: { min: config.commit_count.min, max: config.commit_count.max },
+    min: String(config.commit_count.min),
+    max: String(config.commit_count.max),
+  })
+  if (
+    textState.key.min !== config.commit_count.min ||
+    textState.key.max !== config.commit_count.max
+  ) {
+    setTextState({
+      key: { min: config.commit_count.min, max: config.commit_count.max },
+      min: String(config.commit_count.min),
+      max: String(config.commit_count.max),
+    })
+  }
+  const minText = textState.min
+  const maxText = textState.max
+  const setMinText = (v: string) => setTextState((prev) => ({ ...prev, min: v }))
+  const setMaxText = (v: string) => setTextState((prev) => ({ ...prev, max: v }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setMinText(String(config.commit_count.min))
-    setMaxText(String(config.commit_count.max))
-  }, [config.commit_count.min, config.commit_count.max])
 
   // Clamp only when computing what we'd save: min ≥ 0, max ≥ min, both ≤ cap.
   const cMin = Math.min(COUNT_CAP, Math.max(0, parseInt(minText, 10) || 0))
@@ -161,14 +176,29 @@ function DistributionEditorWrapper({ config }: { config: Config }) {
 
 function WeeklyWindowCard({ config }: { config: Config }) {
   const { updateConfig } = useConfig()
-  const [days, setDays] = useState<Record<string, DayConfig>>(() => clone(config.schedule))
+  // Reset-on-change during render: when the saved schedule changes upstream
+  // (identity comparison — useConfig hands back a new object each save) we
+  // discard local edits and re-seed from the new snapshot.
+  const [daysState, setDaysState] = useState<{
+    key: Record<string, DayConfig>
+    days: Record<string, DayConfig>
+  }>(() => ({ key: config.schedule, days: clone(config.schedule) }))
+  if (daysState.key !== config.schedule) {
+    setDaysState({ key: config.schedule, days: clone(config.schedule) })
+  }
+  const days = daysState.days
+  const setDays = (
+    next:
+      | Record<string, DayConfig>
+      | ((prev: Record<string, DayConfig>) => Record<string, DayConfig>),
+  ) =>
+    setDaysState((prev) => ({
+      ...prev,
+      days: typeof next === 'function' ? next(prev.days) : next,
+    }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setDays(clone(config.schedule))
-  }, [config.schedule])
 
   const dirty = JSON.stringify(days) !== JSON.stringify(config.schedule)
   const invalidDays = DAYS.filter((d) => {
@@ -335,6 +365,17 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Timer-driven "Saved" indicator — responds to savedAt changing rather than
+  // recomputing freshness from Date.now() in render (which would be impure).
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- responding to an external event (savedAt timestamp change), not deriving state from props
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
@@ -343,7 +384,7 @@ function SaveBadge({
     )
   }
   if (dirty) return <span className="text-xs text-[var(--color-brand)]">Unsaved</span>
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

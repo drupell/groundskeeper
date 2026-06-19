@@ -24,11 +24,6 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // react-hooks v7 (Jun 2026) flipped these on as errors. They're
-      // worth cleaning up but not gate-blocking. Demoted to warn for now;
-      // tracked for a follow-up pass.
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/purity': 'warn',
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       '@typescript-eslint/no-unused-vars': [
         'error',

@@ -54,14 +54,18 @@ export function CommitStylePage() {
 
 function PromptCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [value, setValue] = useState(style.prompt)
+  // Pattern A3: track which saved prompt our local edit branched from, and
+  // reset during render when the server value changes. This preserves in-flight
+  // edits across re-renders without a sync useEffect.
+  const [valueState, setValueState] = useState({ key: style.prompt, value: style.prompt })
+  if (valueState.key !== style.prompt) {
+    setValueState({ key: style.prompt, value: style.prompt })
+  }
+  const value = valueState.key === style.prompt ? valueState.value : style.prompt
+  const setValue = (next: string) => setValueState({ key: style.prompt, value: next })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setValue(style.prompt)
-  }, [style.prompt])
 
   const trimmed = value.trim()
   const dirty = trimmed !== style.prompt
@@ -132,15 +136,19 @@ function PromptCard({ style }: { style: CommitStyleConfig }) {
 
 function DestructiveCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [pct, setPct] = useState(() => Math.round(style.destructive_probability * 100))
+  const saved = Math.round(style.destructive_probability * 100)
+  // Pattern A3: keep slider position locally editable but snap it back when the
+  // saved probability changes underneath us (e.g. another tab saved). Resetting
+  // during render avoids the wasted useEffect render.
+  const [pctState, setPctState] = useState({ key: saved, value: saved })
+  if (pctState.key !== saved) {
+    setPctState({ key: saved, value: saved })
+  }
+  const pct = pctState.key === saved ? pctState.value : saved
+  const setPct = (next: number) => setPctState({ key: saved, value: next })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
-  useEffect(() => {
-    setPct(Math.round(style.destructive_probability * 100))
-  }, [style.destructive_probability])
-
-  const saved = Math.round(style.destructive_probability * 100)
   const dirty = pct !== saved
 
   const commit = async (next: number) => {
@@ -212,16 +220,27 @@ const LINE_CAP = 1000
 
 function LineRangeCard({ style }: { style: CommitStyleConfig }) {
   const { updateConfig } = useConfig()
-  const [minText, setMinText] = useState(String(style.min_lines))
-  const [maxText, setMaxText] = useState(String(style.max_lines))
+  // Pattern A3: composite key tracks the saved (min, max) pair we branched
+  // from; when either side changes on the server, we reset both inputs during
+  // render rather than papering over it with a sync useEffect.
+  const savedKey = `${style.min_lines}/${style.max_lines}`
+  const [textState, setTextState] = useState({
+    key: savedKey,
+    min: String(style.min_lines),
+    max: String(style.max_lines),
+  })
+  if (textState.key !== savedKey) {
+    setTextState({ key: savedKey, min: String(style.min_lines), max: String(style.max_lines) })
+  }
+  const minText = textState.key === savedKey ? textState.min : String(style.min_lines)
+  const maxText = textState.key === savedKey ? textState.max : String(style.max_lines)
+  const setMinText = (next: string) =>
+    setTextState((s) => ({ key: savedKey, min: next, max: s.key === savedKey ? s.max : maxText }))
+  const setMaxText = (next: string) =>
+    setTextState((s) => ({ key: savedKey, min: s.key === savedKey ? s.min : minText, max: next }))
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    setMinText(String(style.min_lines))
-    setMaxText(String(style.max_lines))
-  }, [style.min_lines, style.max_lines])
 
   // Clamp only when computing what we'd save: min ≥ 1, max ≥ min, both ≤ cap.
   const cMin = Math.min(LINE_CAP, Math.max(1, parseInt(minText, 10) || 1))
@@ -303,6 +322,22 @@ function SaveBadge({
   dirty: boolean
   savedAt: number | null
 }) {
+  // Pattern B: replace the impure `Date.now() - savedAt < 2_500` check in
+  // render with a timer-driven boolean that flips on save and back off after
+  // the window. Effect responds to the external savedAt event, so the
+  // synchronous setShowSaved call is allowed by set-state-in-effect.
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (!savedAt) return
+    // Responding to an external event (savedAt timestamp changing); flipping
+    // the boolean synchronously is Pattern B for replacing the impure Date.now()
+    // check, but the rule still flags the sync call so we suppress it here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Pattern B: timer-driven badge responding to savedAt prop change
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2_500)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
   if (saving) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-fg-muted)]">
@@ -313,7 +348,7 @@ function SaveBadge({
   if (dirty) {
     return <span className={cn('text-xs text-[var(--color-brand)]')}>Unsaved</span>
   }
-  if (savedAt && Date.now() - savedAt < 2_500) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

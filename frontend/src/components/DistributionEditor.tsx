@@ -46,17 +46,26 @@ export function DistributionEditor({ config, onChange, saving }: DistributionEdi
 
   // Local editing state. We initialize from the persisted curve, resampled
   // onto the integer positions we display. Any external change to the saved
-  // curve (e.g. after a successful save round-trip) re-syncs.
-  const [localCurve, setLocalCurve] = useState<Curve>(() => sampleCurveAtN(incoming, n))
+  // curve (e.g. after a successful save round-trip) re-syncs via the
+  // "adjust state during rendering" escape hatch below.
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const syncKey = `${n}:${JSON.stringify(incoming)}`
+  const [curveState, setCurveState] = useState<{ key: string; value: Curve }>(() => ({
+    key: syncKey,
+    value: sampleCurveAtN(incoming, n),
+  }))
+  if (curveState.key !== syncKey) {
+    setCurveState({ key: syncKey, value: sampleCurveAtN(incoming, n) })
+  }
+  const localCurve = curveState.key === syncKey ? curveState.value : sampleCurveAtN(incoming, n)
+  const setLocalCurve = (updater: Curve | ((prev: Curve) => Curve)) => {
+    setCurveState((prev) => ({
+      key: syncKey,
+      value: typeof updater === 'function' ? (updater as (p: Curve) => Curve)(prev.value) : updater,
+    }))
+  }
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
-
-  useEffect(() => {
-    setLocalCurve(sampleCurveAtN(incoming, n))
-    // We deliberately want to resync when the persisted curve or the range
-    // changes; comparing by JSON keeps the dependency stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(incoming), n])
 
   const svgRef = useRef<SVGSVGElement | null>(null)
 
@@ -271,11 +280,24 @@ function PresetButton({ label, onClick }: { label: string; onClick: () => void }
 }
 
 function SaveBadge({ saving, savedAt }: { saving?: boolean; savedAt: number | null }) {
-  const [, force] = useState(0)
+  // "Saved" badge flashes for 2s after each save. We track the savedAt the
+  // badge is currently showing for; a fresh savedAt flips it on during
+  // render, and a timer flips it back off.
+  const [shownFor, setShownFor] = useState<number | null>(null)
+  const showSaved = shownFor !== null && shownFor === savedAt
+
+  // Adjust state during rendering when a new save lands — see
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  // shownFor === -savedAt encodes "this savedAt has already timed out", so
+  // we don't re-trigger the badge after the timer flips it off.
+  if (savedAt !== null && shownFor !== savedAt && shownFor !== -savedAt) {
+    setShownFor(savedAt)
+  }
+
   useEffect(() => {
-    if (!savedAt) return
-    const t = window.setTimeout(() => force((v) => v + 1), 2_000)
-    return () => clearTimeout(t)
+    if (savedAt === null) return
+    const t = window.setTimeout(() => setShownFor(-savedAt), 2_000)
+    return () => window.clearTimeout(t)
   }, [savedAt])
 
   if (saving) {
@@ -285,7 +307,7 @@ function SaveBadge({ saving, savedAt }: { saving?: boolean; savedAt: number | nu
       </span>
     )
   }
-  if (savedAt && Date.now() - savedAt < 2_000) {
+  if (showSaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
         <Check size={12} /> Saved

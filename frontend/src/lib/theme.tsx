@@ -1,25 +1,13 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
-export type Theme = 'light' | 'dark' | 'system'
-export type EffectiveTheme = 'light' | 'dark'
+import {
+  ThemeContext,
+  type EffectiveTheme,
+  type Theme,
+  type ThemeContextValue,
+} from '@/lib/useTheme'
 
 const STORAGE_KEY = 'gk-theme'
-
-interface ThemeContextValue {
-  theme: Theme
-  setTheme: (theme: Theme) => void
-  effective: EffectiveTheme
-}
-
-const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 function readStoredTheme(): Theme {
   try {
@@ -40,27 +28,26 @@ function systemPrefersDark(): boolean {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function resolveEffective(theme: Theme): EffectiveTheme {
-  if (theme === 'system') {
-    return systemPrefersDark() ? 'dark' : 'light'
-  }
-  return theme
-}
-
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => readStoredTheme())
-  const [effective, setEffective] = useState<EffectiveTheme>(() =>
-    resolveEffective(readStoredTheme()),
-  )
+  const [systemDark, setSystemDark] = useState<boolean>(() => systemPrefersDark())
 
-  // Persist + resolve whenever the chosen theme changes.
+  // Derived state: the effective theme is a pure function of the chosen theme
+  // and the current system preference, so we don't store it separately.
+  const effective = useMemo<EffectiveTheme>(() => {
+    if (theme === 'system') {
+      return systemDark ? 'dark' : 'light'
+    }
+    return theme
+  }, [theme, systemDark])
+
+  // Persist the chosen theme whenever it changes.
   useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEY, theme)
     } catch {
       // Ignore — storage might be unavailable.
     }
-    setEffective(resolveEffective(theme))
   }, [theme])
 
   // When following the system, listen for OS-level changes.
@@ -70,7 +57,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const handler = (event: MediaQueryListEvent) => {
-      setEffective(event.matches ? 'dark' : 'light')
+      setSystemDark(event.matches)
     }
 
     // Older Safari uses addListener/removeListener.
@@ -102,12 +89,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext)
-  if (!ctx) {
-    throw new Error('useTheme must be used inside a <ThemeProvider>')
-  }
-  return ctx
 }
