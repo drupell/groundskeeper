@@ -1485,6 +1485,11 @@ def build_frontend(api_url: str, api_key: str, region: str) -> Path | None:
         return None
 
     env_file = FRONTEND_DIR / ".env.production"
+    # The API key gets baked into the JS bundle Vite builds from this file.
+    # That's accepted because the whole dashboard sits behind Amplify basic
+    # auth (single-user, by design — see frontend/src/lib/api.ts). The .env
+    # file itself is gitignored. CodeQL's py/clear-text-storage-sensitive-data
+    # rule flags this as a false positive given the basic-auth context.
     env_file.write_text(
         f"VITE_API_URL={api_url}\nVITE_API_KEY={api_key}\nVITE_AWS_REGION={region}\n"
     )
