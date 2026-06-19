@@ -33,7 +33,6 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write   # required for CodeQL SARIF upload
   actions: read
 
 jobs:
@@ -168,32 +167,12 @@ jobs:
           # No license token needed for public repos.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  codeql:
-    name: CodeQL (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: ["python", "javascript-typescript"]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:${{ matrix.language }}"
-          # Fail the gate on any "error" severity finding.
-          # (Warnings still surface in the Security tab.)
-          upload: always
+  # CodeQL runs via GitHub's "default setup" (configured in repo Settings ->
+  # Code security). It surfaces as Analyze (python) / Analyze (javascript-
+  # typescript) / Analyze (actions) status checks instead of a custom job
+  # here. The two configs can't coexist - running both errors with
+  # "CodeQL analyses from advanced configurations cannot be processed when
+  # the default setup is enabled". Keep default setup as the source of truth.
 
   strict-types:
     name: Strict gate — tests + strict TS
@@ -252,7 +231,6 @@ jobs:
       - python-security
       - frontend-security
       - secrets-scan
-      - codeql
       - strict-types
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CI_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
